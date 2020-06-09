@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 crc = "1.8.1"
+lru = "0.5.1"
 
 [lib]
 name = "growthring"

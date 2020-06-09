@@ -1,5 +1,6 @@
 #[repr(u8)]
 enum WALRingType {
+    Null = 0x0,
     Full,
     First,
     Middle,
@@ -24,29 +25,59 @@ pub struct WALState {
     pub file_nbit: u8,
 }
 
-pub struct WALWriter {
-    state: WALState,
-    block_buffer: Box<[u8]>,
-    block_size: u32,
-    file_size: u64,
+pub trait WALFile {
+    fn allocate(&self, offset: u64, length: usize);
+    fn write(&self, offset: u64, data: Box<[u8]>);
+    fn read(&self, offset: u64, length: usize) -> Box<[u8]>;
 }
 
-impl WALWriter {
-    pub fn new(state: WALState) -> Self {
+pub trait WALStore {
+    fn open_file(&self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>>;
+    fn remove_file(&self, filename: &str) -> bool;
+    fn scan_files(&self) -> Box<[&str]>;
+}
+
+struct WALFilePool<F: WALStore> {
+    store: F,
+    handles: lru::LruCache<u64, Box<dyn WALFile>>,
+    file_size: u64
+}
+
+impl<F: WALStore> WALFilePool<F> {
+    fn new(store: F, file_size: u64, cache_size: usize) -> Self {
+        WALFilePool {
+            store,
+            handles: lru::LruCache::new(cache_size),
+            file_size,
+        }
+    }
+    fn write(&mut self, offset: u64, data: Box<[u8]>) {
+    }
+}
+
+pub struct WALWriter<F: WALStore> {
+    state: WALState,
+    file_pool: WALFilePool<F>,
+    block_buffer: Box<[u8]>,
+    block_size: u32,
+}
+
+impl<F: WALStore> WALWriter<F> {
+    pub fn new(state: WALState, wal_store: F, cache_size: usize) -> Self {
         let mut b = Vec::new();
         let block_size = 1 << (state.block_nbit as u32);
         let file_size = 1 << (state.file_nbit as u64);
         b.resize(block_size as usize, 0);
         WALWriter{
             state,
+            file_pool: WALFilePool::new(wal_store, file_size, cache_size),
             block_buffer: b.into_boxed_slice(),
             block_size,
-            file_size,
         }
     }
 
-    pub fn grow(&mut self, records: &[Box<[u8]>]) -> Vec<WALWrite> {
-        let mut res = Vec::new();
+    pub fn grow(&mut self, records: &[Box<[u8]>]) {
+        let mut writes = Vec::new();
         let msize = std::mem::size_of::<WALRingBlob>() as u32;
         // the global offest of the begining of the block
         // the start of the unwritten data
@@ -92,7 +123,7 @@ impl WALWriter {
                     bbuff_cur = self.block_size;
                 }
                 if bbuff_cur == self.block_size {
-                    res.push((self.state.last,
+                    writes.push((self.state.last,
                              self.block_buffer[bbuff_start as usize..]
                                 .to_vec().into_boxed_slice()));
                     self.state.last += (self.block_size - bbuff_start) as u64;
@@ -102,12 +133,14 @@ impl WALWriter {
             }
         }
         if bbuff_cur > bbuff_start {
-            res.push((self.state.last,
+            writes.push((self.state.last,
                      self.block_buffer[bbuff_start as usize..bbuff_cur as usize]
                         .to_vec().into_boxed_slice()));
             self.state.last += (bbuff_cur - bbuff_start) as u64;
         }
-        res
+        for (off, w) in writes.into_iter() {
+            self.file_pool.write(off, w)
+        }
     }
 }
 
