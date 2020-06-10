@@ -87,6 +87,8 @@ impl Drop for WALStoreTest {
 }
 
 impl WALStore for WALStoreTest {
+    type FileNameIter = std::vec::IntoIter<String>;
+
     fn open_file(&self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>> {
         println!("open_file(filename={}, touch={})", filename, touch);
         let filename = filename.to_string();
@@ -98,13 +100,13 @@ impl WALStore for WALStoreTest {
         unlinkat(Some(self.rootfd), filename, UnlinkatFlags::NoRemoveDir).or_else(|_| Err(()))
     }
 
-    fn enumerate_files(&self) -> Box<[String]> {
+    fn enumerate_files(&self) -> Self::FileNameIter {
         println!("enumerate_files()");
         let mut logfiles = Vec::new();
         for fname in std::fs::read_dir(&self.rootpath).unwrap() {
             logfiles.push(fname.unwrap().file_name().into_string().unwrap())
         }
-        logfiles.into_boxed_slice()
+        logfiles.into_iter()
     }
 
     fn apply_payload(&self, payload: WALBytes) {

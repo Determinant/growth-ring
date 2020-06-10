@@ -98,6 +98,7 @@ dependencies = [
  "lru",
  "nix",
  "rand",
+ "regex",
  "scan_fmt",
 ]
 
