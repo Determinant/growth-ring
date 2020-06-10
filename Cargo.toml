@@ -13,6 +13,8 @@ scan_fmt = "0.2.5"
 
 [dev-dependencies]
 hex = "0.4.2"
+libc = "0.2.44"
+nix = "0.17.0"
 
 [lib]
 name = "growthring"
