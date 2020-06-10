@@ -62,23 +62,23 @@ pub trait WALFile {
     /// should be _atomic_ (the entire single write should be all or nothing).
     fn write(&self, offset: WALPos, data: WALBytes);
     /// Read data with offset.
-    fn read(&self, offset: WALPos, length: usize) -> WALBytes;
+    fn read(&self, offset: WALPos, length: usize) -> Option<WALBytes>;
 }
 
 pub trait WALStore {
     type FileNameIter: Iterator<Item = String>;
 
     /// Open a file given the filename, create the file if not exists when `touch` is `true`.
-    fn open_file(&self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>>;
+    fn open_file(&mut self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>>;
     /// Unlink a file given the filename.
-    fn remove_file(&self, filename: &str) -> Result<(), ()>;
+    fn remove_file(&mut self, filename: &str) -> Result<(), ()>;
     /// Enumerate all WAL filenames. It should include all WAL files that are previously opened
     /// (created) but not removed. The list could be unordered.
     fn enumerate_files(&self) -> Self::FileNameIter;
     /// Apply the payload during recovery. This notifies the application should redo the given
     /// operation to ensure its state is consistent (the major goal of having a WAL). We assume
     /// the application applies the payload by the _order_ of this callback invocation.
-    fn apply_payload(&self, payload: WALBytes);
+    fn apply_payload(&mut self, payload: WALBytes);
 }
 
 /// The middle layer that manages WAL file handles and invokes public trait functions to actually
@@ -148,7 +148,7 @@ impl<F: WALStore> WALFilePool<F> {
         }
     }
 
-    fn remove_file(&self, fid: u64) -> Result<(), ()> {
+    fn remove_file(&mut self, fid: u64) -> Result<(), ()> {
         self.store.remove_file(&Self::get_fname(fid))
     }
 
@@ -314,8 +314,8 @@ impl<F: WALStore> WALLoader<F> {
             let fid = self.file_pool.get_fid(fname);
             let f = self.file_pool.get_file(fid, false);
             let mut off = 0;
-            while block_size - (off & (block_size - 1)) > msize as u64 {
-                let header_raw = f.read(off, msize as usize);
+            while let Some(header_raw) = f.read(off, msize as usize) {
+                if block_size - (off & (block_size - 1)) <= msize as u64 { break }
                 off += msize as u64;
                 let header = unsafe {
                     std::mem::transmute::<*const u8, &WALRingBlob>(header_raw.as_ptr())};
@@ -323,21 +323,21 @@ impl<F: WALStore> WALLoader<F> {
                 match header.rtype {
                     WALRingType::Full => {
                         assert!(chunks.is_none());
-                        let payload = f.read(off, rsize as usize);
+                        let payload = f.read(off, rsize as usize).unwrap();
                         off += rsize as u64;
                         self.file_pool.store.apply_payload(payload);
                     },
                     WALRingType::First => {
                         assert!(chunks.is_none());
-                        chunks = Some(vec![f.read(off, rsize as usize)]);
+                        chunks = Some(vec![f.read(off, rsize as usize).unwrap()]);
                         off += rsize as u64;
                     },
                     WALRingType::Middle => {
-                        chunks.as_mut().unwrap().push(f.read(off, rsize as usize));
+                        chunks.as_mut().unwrap().push(f.read(off, rsize as usize).unwrap());
                         off += rsize as u64;
                     },
                     WALRingType::Last => {
-                        chunks.as_mut().unwrap().push(f.read(off, rsize as usize));
+                        chunks.as_mut().unwrap().push(f.read(off, rsize as usize).unwrap());
                         off += rsize as u64;
 
                         let _chunks = chunks.take().unwrap();

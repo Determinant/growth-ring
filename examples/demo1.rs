@@ -49,11 +49,12 @@ impl WALFile for WALFileTest {
                 self.filename, offset, offset + data.len() as u64, hex::encode(&data));
         pwrite(self.fd, &*data, offset as off_t).unwrap();
     }
-    fn read(&self, offset: WALPos, length: usize) -> WALBytes {
+    fn read(&self, offset: WALPos, length: usize) -> Option<WALBytes> {
         let mut buff = Vec::new();
         buff.resize(length, 0);
-        pread(self.fd, &mut buff[..], offset as off_t).unwrap();
-        buff.into_boxed_slice()
+        if pread(self.fd, &mut buff[..], offset as off_t).unwrap() == length {
+            Some(buff.into_boxed_slice())
+        } else { None }
     }
 }
 
@@ -89,13 +90,13 @@ impl Drop for WALStoreTest {
 impl WALStore for WALStoreTest {
     type FileNameIter = std::vec::IntoIter<String>;
 
-    fn open_file(&self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>> {
+    fn open_file(&mut self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>> {
         println!("open_file(filename={}, touch={})", filename, touch);
         let filename = filename.to_string();
         Some(Box::new(WALFileTest::new(self.rootfd, &filename)))
     }
 
-    fn remove_file(&self, filename: &str) -> Result<(), ()> {
+    fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
         println!("remove_file(filename={})", filename);
         unlinkat(Some(self.rootfd), filename, UnlinkatFlags::NoRemoveDir).or_else(|_| Err(()))
     }
@@ -109,7 +110,7 @@ impl WALStore for WALStoreTest {
         logfiles.into_iter()
     }
 
-    fn apply_payload(&self, payload: WALBytes) {
+    fn apply_payload(&mut self, payload: WALBytes) {
         println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap())
     }
 }
