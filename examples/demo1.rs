@@ -13,15 +13,16 @@ struct WALFileTest {
 }
 
 impl WALFileTest {
-    fn new(rootfd: RawFd, filename: &str) -> Self {
-        let fd = openat(rootfd, filename,
+    fn new(rootfd: RawFd, filename: &str) -> Result<Self, ()> {
+        openat(rootfd, filename,
             OFlag::O_CREAT | OFlag::O_RDWR,
-            Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
-        let filename = filename.to_string();
-        WALFileTest {
-            filename,
-            fd,
-        }
+            Mode::S_IRUSR | Mode::S_IWUSR).and_then(|fd| {
+            let filename = filename.to_string();
+            Ok (WALFileTest {
+                filename,
+                fd,
+            })
+        }).or_else(|_| Err(()))
     }
 }
 
@@ -44,17 +45,20 @@ impl WALFile for WALFileTest {
         ftruncate(self.fd, length as off_t).or_else(|_| Err(()))
     }
 
-    fn write(&self, offset: WALPos, data: WALBytes) {
+    fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
         println!("{}.write(offset=0x{:x}, end=0x{:x}, data=0x{})",
                 self.filename, offset, offset + data.len() as u64, hex::encode(&data));
-        pwrite(self.fd, &*data, offset as off_t).unwrap();
+        pwrite(self.fd, &*data, offset as off_t)
+            .or_else(|_| Err(()))
+            .and_then(|nwrote| if nwrote == data.len() { Ok(()) } else { Err(()) })
     }
-    fn read(&self, offset: WALPos, length: usize) -> Option<WALBytes> {
+
+    fn read(&self, offset: WALPos, length: usize) -> Result<Option<WALBytes>, ()> {
         let mut buff = Vec::new();
         buff.resize(length, 0);
-        if pread(self.fd, &mut buff[..], offset as off_t).unwrap() == length {
-            Some(buff.into_boxed_slice())
-        } else { None }
+        pread(self.fd, &mut buff[..], offset as off_t)
+            .or_else(|_| Err(()))
+            .and_then(|nread| Ok(if nread == length {Some(buff.into_boxed_slice())} else {None}))
     }
 }
 
@@ -90,10 +94,10 @@ impl Drop for WALStoreTest {
 impl WALStore for WALStoreTest {
     type FileNameIter = std::vec::IntoIter<String>;
 
-    fn open_file(&mut self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>> {
+    fn open_file(&mut self, filename: &str, touch: bool) -> Result<Box<dyn WALFile>, ()> {
         println!("open_file(filename={}, touch={})", filename, touch);
         let filename = filename.to_string();
-        Some(Box::new(WALFileTest::new(self.rootfd, &filename)))
+        WALFileTest::new(self.rootfd, &filename).and_then(|f| Ok(Box::new(f) as Box<dyn WALFile>))
     }
 
     fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
@@ -101,23 +105,24 @@ impl WALStore for WALStoreTest {
         unlinkat(Some(self.rootfd), filename, UnlinkatFlags::NoRemoveDir).or_else(|_| Err(()))
     }
 
-    fn enumerate_files(&self) -> Self::FileNameIter {
+    fn enumerate_files(&self) -> Result<Self::FileNameIter, ()> {
         println!("enumerate_files()");
         let mut logfiles = Vec::new();
         for fname in std::fs::read_dir(&self.rootpath).unwrap() {
             logfiles.push(fname.unwrap().file_name().into_string().unwrap())
         }
-        logfiles.into_iter()
+        Ok(logfiles.into_iter())
     }
 
-    fn apply_payload(&mut self, payload: WALBytes) {
-        println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap())
+    fn apply_payload(&mut self, payload: WALBytes) -> Result<(), ()> {
+        println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap());
+        Ok(())
     }
 }
 
 fn test(records: Vec<String>, wal: &mut WALWriter<WALStoreTest>) -> Box<[WALRingId]> {
     let records: Vec<WALBytes> = records.into_iter().map(|s| s.into_bytes().into_boxed_slice()).collect();
-    let ret = wal.grow(&records);
+    let ret = wal.grow(&records).unwrap();
     for ring_id in ret.iter() {
         println!("got ring id: {:?}", ring_id);
     }
@@ -127,7 +132,7 @@ fn test(records: Vec<String>, wal: &mut WALWriter<WALStoreTest>) -> Box<[WALRing
 fn main() {
     let mut rng = rand::thread_rng();
     let store = WALStoreTest::new("./wal_demo1", true);
-    let mut wal = WALLoader::new(store, 9, 8, 1000).recover();
+    let mut wal = WALLoader::new(store, 9, 8, 1000).recover().unwrap();
     for _ in 0..3 {
         test(["hi", "hello", "lol"].iter().map(|s| s.to_string()).collect::<Vec<String>>(), &mut wal);
     }
@@ -136,13 +141,13 @@ fn main() {
     }
 
     let store = WALStoreTest::new("./wal_demo1", false);
-    let mut wal = WALLoader::new(store, 9, 8, 1000).recover();
+    let mut wal = WALLoader::new(store, 9, 8, 1000).recover().unwrap();
     for _ in 0..3 {
         test(vec!["a".repeat(10), "b".repeat(100), "c".repeat(300), "d".repeat(400)], &mut wal);
     }
 
     let store = WALStoreTest::new("./wal_demo1", false);
-    let mut wal = WALLoader::new(store, 9, 8, 1000).recover();
+    let mut wal = WALLoader::new(store, 9, 8, 1000).recover().unwrap();
     for _ in 0..3 {
         let mut ids = Vec::new();
         for _ in 0..3 {

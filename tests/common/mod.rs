@@ -32,9 +32,11 @@ impl std::ops::Deref for FileContentEmul {
     fn deref(&self) -> &Self::Target {&self.0}
 }
 
+type FailGen = std::iter::Iterator<Item = bool>;
+
 /// Emulate the a virtual file handle.
 pub struct WALFileEmul {
-    file: Rc<FileContentEmul>
+    file: Rc<FileContentEmul>,
 }
 
 impl WALFile for WALFileEmul {
@@ -52,17 +54,18 @@ impl WALFile for WALFileEmul {
         Ok(())
     }
 
-    fn write(&self, offset: WALPos, data: WALBytes) {
+    fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
         let offset = offset as usize;
         &self.file.borrow_mut()[offset..offset + data.len()].copy_from_slice(&data);
+        Ok(())
     }
 
-    fn read(&self, offset: WALPos, length: usize) -> Option<WALBytes> {
+    fn read(&self, offset: WALPos, length: usize) -> Result<Option<WALBytes>, ()> {
         let offset = offset as usize;
         let file = self.file.borrow();
-        if offset + length > file.len() { None }
+        if offset + length > file.len() { Ok(None) }
         else {
-            Some((&file[offset..offset + length]).to_vec().into_boxed_slice())
+            Ok(Some((&file[offset..offset + length]).to_vec().into_boxed_slice()))
         }
     }
 }
@@ -87,14 +90,14 @@ impl<'a> WALStoreEmul<'a> {
 impl<'a> WALStore for WALStoreEmul<'a> {
     type FileNameIter = std::vec::IntoIter<String>;
 
-    fn open_file(&mut self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>> {
+    fn open_file(&mut self, filename: &str, touch: bool) -> Result<Box<dyn WALFile>, ()> {
         match self.0.files.entry(filename.to_string()) {
-            Entry::Occupied(e) => Some(Box::new(WALFileEmul { file: e.get().clone() })),
+            Entry::Occupied(e) => Ok(Box::new(WALFileEmul { file: e.get().clone() })),
             Entry::Vacant(e) => if touch {
-                Some(Box::new(
+                Ok(Box::new(
                     WALFileEmul { file: e.insert(Rc::new(FileContentEmul::new())).clone() }))
             } else {
-                None
+                Err(())
             }
         }
     }
@@ -103,15 +106,16 @@ impl<'a> WALStore for WALStoreEmul<'a> {
         self.0.files.remove(filename).ok_or(()).and_then(|_| Ok(()))
     }
 
-    fn enumerate_files(&self) -> Self::FileNameIter {
+    fn enumerate_files(&self) -> Result<Self::FileNameIter, ()> {
         let mut logfiles = Vec::new();
         for (fname, _) in self.0.files.iter() {
             logfiles.push(fname.clone())
         }
-        logfiles.into_iter()
+        Ok(logfiles.into_iter())
     }
 
-    fn apply_payload(&mut self, payload: WALBytes) {
-        println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap())
+    fn apply_payload(&mut self, payload: WALBytes) -> Result<(), ()> {
+        println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap());
+        Ok(())
     }
 }
