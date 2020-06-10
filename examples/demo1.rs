@@ -2,9 +2,10 @@ use std::os::unix::io::RawFd;
 use nix::unistd::{close, mkdir, unlinkat, UnlinkatFlags, ftruncate};
 use nix::fcntl::{open, openat, OFlag, fallocate, FallocateFlags};
 use nix::sys::{stat::Mode, uio::{pwrite, pread}};
+use rand::{Rng, seq::SliceRandom};
 use libc::off_t;
 
-use growthring::{WALFile, WALStore, WALPos, WALBytes, WALLoader, WALWriter};
+use growthring::{WALFile, WALStore, WALPos, WALBytes, WALLoader, WALWriter, WALRingId};
 
 struct WALFileTest {
     filename: String,
@@ -92,9 +93,9 @@ impl WALStore for WALStoreTest {
         Some(Box::new(WALFileTest::new(self.rootfd, &filename)))
     }
 
-    fn remove_file(&self, filename: &str) -> bool {
+    fn remove_file(&self, filename: &str) -> Result<(), ()> {
         println!("remove_file(filename={})", filename);
-        unlinkat(Some(self.rootfd), filename, UnlinkatFlags::NoRemoveDir).is_ok()
+        unlinkat(Some(self.rootfd), filename, UnlinkatFlags::NoRemoveDir).or_else(|_| Err(()))
     }
 
     fn enumerate_files(&self) -> Box<[String]> {
@@ -111,28 +112,49 @@ impl WALStore for WALStoreTest {
     }
 }
 
-fn test(records: Vec<String>, wal: &mut WALWriter<WALStoreTest>) {
+fn test(records: Vec<String>, wal: &mut WALWriter<WALStoreTest>) -> Box<[WALRingId]> {
     let records: Vec<WALBytes> = records.into_iter().map(|s| s.into_bytes().into_boxed_slice()).collect();
     let ret = wal.grow(&records);
     for ring_id in ret.iter() {
         println!("got ring id: {:?}", ring_id);
     }
+    ret
 }
 
 fn main() {
+    let mut rng = rand::thread_rng();
     let store = WALStoreTest::new("./wal_demo1", true);
     let mut wal = WALLoader::new(store, 9, 8, 1000).recover();
     for _ in 0..3 {
-        test(["hi", "hello", "lol"].iter().map(|s| s.to_string()).collect::<Vec<String>>(), &mut wal)
+        test(["hi", "hello", "lol"].iter().map(|s| s.to_string()).collect::<Vec<String>>(), &mut wal);
     }
     for _ in 0..3 {
-        test(["a".repeat(10), "b".repeat(100), "c".repeat(1000)].iter().map(|s| s.to_string()).collect::<Vec<String>>(), &mut wal)
+        test(vec!["a".repeat(10), "b".repeat(100), "c".repeat(1000)], &mut wal);
     }
+
     let store = WALStoreTest::new("./wal_demo1", false);
     let mut wal = WALLoader::new(store, 9, 8, 1000).recover();
     for _ in 0..3 {
-        test(["a".repeat(10), "b".repeat(100), "c".repeat(300), "d".repeat(400)].iter().map(|s| s.to_string()).collect::<Vec<String>>(), &mut wal)
+        test(vec!["a".repeat(10), "b".repeat(100), "c".repeat(300), "d".repeat(400)], &mut wal);
     }
+
     let store = WALStoreTest::new("./wal_demo1", false);
-    let wal = WALLoader::new(store, 9, 8, 1000).recover();
+    let mut wal = WALLoader::new(store, 9, 8, 1000).recover();
+    for _ in 0..3 {
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let mut records = Vec::new();
+            for _ in 0..100 {
+                records.push("a".repeat(rng.gen_range(1, 10)))
+            }
+            for id in test(records, &mut wal).iter() {
+                ids.push(*id)
+            }
+        }
+        ids.shuffle(&mut rng);
+        for e in ids.chunks(20) {
+            println!("peel(20)");
+            wal.peel(e);
+        }
+    }
 }
