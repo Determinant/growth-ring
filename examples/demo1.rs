@@ -1,12 +1,10 @@
-use growthring::{WALFile, WALStore, WALPos, WALBytes, WALLoader, WALWriter};
-
 use std::os::unix::io::RawFd;
-use nix::Error::Sys;
-use nix::errno::Errno;
-use nix::unistd::{close, mkdir, sysconf, SysconfVar};
+use nix::unistd::{close, mkdir, unlinkat, UnlinkatFlags, ftruncate};
 use nix::fcntl::{open, openat, OFlag, fallocate, FallocateFlags};
-use nix::sys::{stat::Mode, uio::pwrite};
+use nix::sys::{stat::Mode, uio::{pwrite, pread}};
 use libc::off_t;
+
+use growthring::{WALFile, WALStore, WALPos, WALBytes, WALLoader, WALWriter};
 
 struct WALFileTest {
     filename: String,
@@ -33,26 +31,39 @@ impl Drop for WALFileTest {
 }
 
 impl WALFile for WALFileTest {
-    fn allocate(&self, offset: WALPos, length: usize) {
+    fn allocate(&self, offset: WALPos, length: usize) -> Result<(), ()> {
         println!("{}.allocate(offset=0x{:x}, end=0x{:x})", self.filename, offset, offset + length as u64);
-        fallocate(self.fd, FallocateFlags::FALLOC_FL_ZERO_RANGE, offset as off_t, length as off_t);
+        fallocate(self.fd,
+                FallocateFlags::FALLOC_FL_ZERO_RANGE,
+                offset as off_t, length as off_t).and_then(|_| Ok(())).or_else(|_| Err(()))
     }
+
+    fn truncate(&self, length: usize) -> Result<(), ()> {
+        println!("{}.truncate(length={})", self.filename, length);
+        ftruncate(self.fd, length as off_t).or_else(|_| Err(()))
+    }
+
     fn write(&self, offset: WALPos, data: WALBytes) {
         println!("{}.write(offset=0x{:x}, end=0x{:x}, data=0x{})",
                 self.filename, offset, offset + data.len() as u64, hex::encode(&data));
-        pwrite(self.fd, &*data, offset as off_t);
+        pwrite(self.fd, &*data, offset as off_t).unwrap();
     }
     fn read(&self, offset: WALPos, length: usize) -> WALBytes {
-        unreachable!()
+        let mut buff = Vec::new();
+        buff.resize(length, 0);
+        pread(self.fd, &mut buff[..], offset as off_t).unwrap();
+        buff.into_boxed_slice()
     }
 }
 
 struct WALStoreTest {
-    rootfd: RawFd
+    rootfd: RawFd,
+    rootpath: String
 }
 
 impl WALStoreTest {
     fn new(wal_dir: &str, truncate: bool) -> Self {
+        let rootpath = wal_dir.to_string();
         if truncate {
             let _ = std::fs::remove_dir_all(wal_dir);
         }
@@ -64,7 +75,7 @@ impl WALStoreTest {
             Ok(fd) => fd,
             Err(_) => panic!("error while opening the DB")
         };
-        WALStoreTest { rootfd }
+        WALStoreTest { rootfd, rootpath }
     }
 }
 
@@ -76,20 +87,27 @@ impl Drop for WALStoreTest {
 
 impl WALStore for WALStoreTest {
     fn open_file(&self, filename: &str, touch: bool) -> Option<Box<dyn WALFile>> {
-        println!("open_file(filename={}, touch={}", filename, touch);
+        println!("open_file(filename={}, touch={})", filename, touch);
         let filename = filename.to_string();
         Some(Box::new(WALFileTest::new(self.rootfd, &filename)))
     }
+
     fn remove_file(&self, filename: &str) -> bool {
         println!("remove_file(filename={})", filename);
-        true
+        unlinkat(Some(self.rootfd), filename, UnlinkatFlags::NoRemoveDir).is_ok()
     }
+
     fn enumerate_files(&self) -> Box<[String]> {
         println!("enumerate_files()");
-        Vec::new().into_boxed_slice()
+        let mut logfiles = Vec::new();
+        for fname in std::fs::read_dir(&self.rootpath).unwrap() {
+            logfiles.push(fname.unwrap().file_name().into_string().unwrap())
+        }
+        logfiles.into_boxed_slice()
     }
+
     fn apply_payload(&self, payload: WALBytes) {
-        println!("apply_payload(payload=0x{})", hex::encode(payload))
+        println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap())
     }
 }
 
@@ -110,4 +128,11 @@ fn main() {
     for _ in 0..3 {
         test(["a".repeat(10), "b".repeat(100), "c".repeat(1000)].iter().map(|s| s.to_string()).collect::<Vec<String>>(), &mut wal)
     }
+    let store = WALStoreTest::new("./wal_demo1", false);
+    let mut wal = WALLoader::new(store, 9, 8, 1000).recover();
+    for _ in 0..3 {
+        test(["a".repeat(10), "b".repeat(100), "c".repeat(300), "d".repeat(400)].iter().map(|s| s.to_string()).collect::<Vec<String>>(), &mut wal)
+    }
+    let store = WALStoreTest::new("./wal_demo1", false);
+    let wal = WALLoader::new(store, 9, 8, 1000).recover();
 }
