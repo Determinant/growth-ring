@@ -5,7 +5,7 @@ use nix::sys::{stat::Mode, uio::{pwrite, pread}};
 use rand::{Rng, seq::SliceRandom};
 use libc::off_t;
 
-use growthring::{WALFile, WALStore, WALPos, WALBytes, WALLoader, WALWriter, WALRingId};
+use growthring::wal::{WALFile, WALStore, WALPos, WALBytes, WALLoader, WALWriter, WALRingId};
 
 struct WALFileTest {
     filename: String,
