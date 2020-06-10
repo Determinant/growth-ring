@@ -32,15 +32,19 @@ impl std::ops::Deref for FileContentEmul {
     fn deref(&self) -> &Self::Target {&self.0}
 }
 
-type FailGen = std::iter::Iterator<Item = bool>;
-
-/// Emulate the a virtual file handle.
-pub struct WALFileEmul {
-    file: Rc<FileContentEmul>,
+pub trait FailGen {
+    fn next_fail(&self) -> bool;
 }
 
-impl WALFile for WALFileEmul {
+/// Emulate the a virtual file handle.
+pub struct WALFileEmul<G: FailGen> {
+    file: Rc<FileContentEmul>,
+    fgen: Rc<G>
+}
+
+impl<G: FailGen> WALFile for WALFileEmul<G> {
     fn allocate(&self, offset: WALPos, length: usize) -> Result<(), ()> {
+        if self.fgen.next_fail() { return Err(()) }
         let offset = offset as usize;
         if offset + length > self.file.borrow().len() {
             self.file.borrow_mut().resize(offset + length, 0)
@@ -50,17 +54,20 @@ impl WALFile for WALFileEmul {
     }
 
     fn truncate(&self, length: usize) -> Result<(), ()> {
+        if self.fgen.next_fail() { return Err(()) }
         self.file.borrow_mut().resize(length, 0);
         Ok(())
     }
 
     fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
+        if self.fgen.next_fail() { return Err(()) }
         let offset = offset as usize;
         &self.file.borrow_mut()[offset..offset + data.len()].copy_from_slice(&data);
         Ok(())
     }
 
     fn read(&self, offset: WALPos, length: usize) -> Result<Option<WALBytes>, ()> {
+        if self.fgen.next_fail() { return Err(()) }
         let offset = offset as usize;
         let file = self.file.borrow();
         if offset + length > file.len() { Ok(None) }
@@ -70,7 +77,7 @@ impl WALFile for WALFileEmul {
     }
 }
 
-pub struct WALStoreEmulState{
+pub struct WALStoreEmulState {
     files: HashMap<String, Rc<FileContentEmul>>,
 }
 
@@ -79,23 +86,32 @@ impl WALStoreEmulState {
 }
 
 /// Emulate the persistent storage state.
-pub struct WALStoreEmul<'a>(&'a mut WALStoreEmulState);
+pub struct WALStoreEmul<'a, G: FailGen> {
+    state: &'a mut WALStoreEmulState,
+    fgen: Rc<G>
+}
 
-impl<'a> WALStoreEmul<'a> {
-    pub fn new(state: &'a mut WALStoreEmulState) -> Self {
-        WALStoreEmul(state)
+impl<'a, G: FailGen> WALStoreEmul<'a, G> {
+    pub fn new(state: &'a mut WALStoreEmulState, fail_gen: G) -> Self {
+        WALStoreEmul { state, fgen: Rc::new(fail_gen) }
     }
 }
 
-impl<'a> WALStore for WALStoreEmul<'a> {
+impl<'a, G: 'static + FailGen> WALStore for WALStoreEmul<'a, G> {
     type FileNameIter = std::vec::IntoIter<String>;
 
     fn open_file(&mut self, filename: &str, touch: bool) -> Result<Box<dyn WALFile>, ()> {
-        match self.0.files.entry(filename.to_string()) {
-            Entry::Occupied(e) => Ok(Box::new(WALFileEmul { file: e.get().clone() })),
+        if self.fgen.next_fail() { return Err(()) }
+        match self.state.files.entry(filename.to_string()) {
+            Entry::Occupied(e) => Ok(Box::new(WALFileEmul {
+                file: e.get().clone(),
+                fgen: self.fgen.clone()
+            })),
             Entry::Vacant(e) => if touch {
-                Ok(Box::new(
-                    WALFileEmul { file: e.insert(Rc::new(FileContentEmul::new())).clone() }))
+                Ok(Box::new(WALFileEmul {
+                    file: e.insert(Rc::new(FileContentEmul::new())).clone(),
+                    fgen: self.fgen.clone()
+                }))
             } else {
                 Err(())
             }
@@ -103,19 +119,50 @@ impl<'a> WALStore for WALStoreEmul<'a> {
     }
 
     fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
-        self.0.files.remove(filename).ok_or(()).and_then(|_| Ok(()))
+        if self.fgen.next_fail() { return Err(()) }
+        self.state.files.remove(filename).ok_or(()).and_then(|_| Ok(()))
     }
 
     fn enumerate_files(&self) -> Result<Self::FileNameIter, ()> {
+        if self.fgen.next_fail() { return Err(()) }
         let mut logfiles = Vec::new();
-        for (fname, _) in self.0.files.iter() {
+        for (fname, _) in self.state.files.iter() {
             logfiles.push(fname.clone())
         }
         Ok(logfiles.into_iter())
     }
 
     fn apply_payload(&mut self, payload: WALBytes) -> Result<(), ()> {
+        if self.fgen.next_fail() { return Err(()) }
         println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap());
         Ok(())
     }
+}
+
+pub struct SingleFailGen {
+    cnt: std::cell::Cell<usize>,
+    fail_point: usize
+}
+
+impl SingleFailGen {
+    pub fn new(fail_point: usize) -> Self {
+        SingleFailGen {
+            cnt: std::cell::Cell::new(0),
+            fail_point
+        }
+    }
+}
+
+impl FailGen for SingleFailGen {
+    fn next_fail(&self) -> bool {
+        let c = self.cnt.get();
+        self.cnt.set(c + 1);
+        c == self.fail_point
+    }
+}
+
+pub struct ZeroFailGen;
+
+impl FailGen for ZeroFailGen {
+    fn next_fail(&self) -> bool { false }
 }

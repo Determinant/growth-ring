@@ -172,10 +172,6 @@ impl<F: WALStore> WALWriter<F> {
     fn new(state: WALState, file_pool: WALFilePool<F>) -> Self {
         let mut b = Vec::new();
         let block_size = 1 << file_pool.block_nbit as u32;
-        //let block_nbit = state.block_nbit;
-        //let block_size = 1 << (block_nbit as u32);
-        //let file_nbit = state.file_nbit;
-        //let file_size = 1 << (file_nbit as u64);
         b.resize(block_size as usize, 0);
         WALWriter{
             state,
