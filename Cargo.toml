@@ -11,6 +11,7 @@ crc = "1.8.1"
 lru = "0.5.1"
 scan_fmt = "0.2.5"
 regex = "1"
+async-trait = "0.1"
 
 [dev-dependencies]
 hex = "0.4.2"

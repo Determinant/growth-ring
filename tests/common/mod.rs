@@ -1,6 +1,7 @@
 #[cfg(test)]
 #[allow(dead_code)]
 extern crate growthring;
+use async_trait::async_trait;
 use growthring::wal::{
     WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore,
 };
@@ -37,8 +38,9 @@ pub struct WALFileEmul<G: FailGen> {
     fgen: Rc<G>,
 }
 
+#[async_trait(?Send)]
 impl<G: FailGen> WALFile for WALFileEmul<G> {
-    fn allocate(&self, offset: WALPos, length: usize) -> Result<(), ()> {
+    async fn allocate(&self, offset: WALPos, length: usize) -> Result<(), ()> {
         if self.fgen.next_fail() {
             return Err(());
         }
@@ -60,7 +62,7 @@ impl<G: FailGen> WALFile for WALFileEmul<G> {
         Ok(())
     }
 
-    fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
+    async fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
         if self.fgen.next_fail() {
             return Err(());
         }
@@ -548,7 +550,7 @@ impl PaintingSim {
                 ringid_map.insert(*rid, ops.len() - 1);
             }
             // grow could fail
-            ok?;
+            futures::executor::block_on(ok)?;
             // finish appending to WAL
             /*
             for rid in rids.iter() {
