@@ -99,11 +99,11 @@ where
 }
 
 impl<'a, G: FailGen, F: FnMut(WALBytes, WALRingId)> WALStoreEmul<'a, G, F> {
-    pub fn new(state: &'a mut WALStoreEmulState, fail_gen: G,
+    pub fn new(state: &'a mut WALStoreEmulState, fgen: Rc<G>,
                 recover: F) -> Self {
         WALStoreEmul {
             state,
-            fgen: Rc::new(fail_gen),
+            fgen,
             recover
         }
     }
@@ -133,7 +133,7 @@ where
     }
 
     fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
-        println!("remove_file(filename={})", filename);
+        //println!("remove_file(filename={})", filename);
         if self.fgen.next_fail() { return Err(()) }
         self.state.files.remove(filename).ok_or(()).and_then(|_| Ok(()))
     }
@@ -149,9 +149,9 @@ where
 
     fn apply_payload(&mut self, payload: WALBytes, ringid: WALRingId) -> Result<(), ()> {
         if self.fgen.next_fail() { return Err(()) }
-        println!("apply_payload(payload=0x{}, ringid={:?})",
-                hex::encode(&payload),
-                ringid);
+        //println!("apply_payload(payload=0x{}, ringid={:?})",
+        //        hex::encode(&payload),
+        //        ringid);
         (self.recover)(payload, ringid);
         Ok(())
     }
@@ -185,11 +185,26 @@ impl FailGen for ZeroFailGen {
     fn next_fail(&self) -> bool { false }
 }
 
+pub struct CountFailGen(std::cell::Cell<usize>);
+
+impl CountFailGen {
+    pub fn new() -> Self { CountFailGen(std::cell::Cell::new(0)) }
+    pub fn get_count(&self) -> usize { self.0.get() }
+}
+
+impl FailGen for CountFailGen {
+    fn next_fail(&self) -> bool {
+        self.0.set(self.0.get() + 1);
+        false
+    }
+}
+
 /// An ordered list of intervals: `(begin, end, color)*`.
 pub struct PaintStrokes(Vec<(u32, u32, u32)>);
 
 impl PaintStrokes {
     pub fn new() -> Self { PaintStrokes(Vec::new()) }
+    pub fn clone(&self) -> Self { PaintStrokes(self.0.clone()) }
     pub fn to_bytes(&self) -> WALBytes {
         let mut res: Vec<u8> = Vec::new();
         let is = std::mem::size_of::<u32>();

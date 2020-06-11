@@ -192,7 +192,7 @@ impl<F: WALStore> WALWriter<F> {
     /// Submit a sequence of records to WAL; WALStore/WALFile callbacks are invoked before the
     /// function returns.  The caller then has the knowledge of WAL writes so it should defer
     /// actual data writes after WAL writes.
-    pub fn grow<T: AsRef<[WALBytes]>>(&mut self, records: T) -> Result<Box<[WALRingId]>, ()> {
+    pub fn grow<T: AsRef<[WALBytes]>>(&mut self, records: T) -> (Box<[WALRingId]>, Result<(), ()>) {
         let mut res = Vec::new();
         let mut writes = Vec::new();
         let msize = std::mem::size_of::<WALRingBlob>() as u32;
@@ -268,8 +268,8 @@ impl<F: WALStore> WALWriter<F> {
                         .to_vec().into_boxed_slice()));
             self.state.next += (bbuff_cur - bbuff_start) as u64;
         }
-        self.file_pool.write(writes)?;
-        Ok(res.into_boxed_slice())
+
+        (res.into_boxed_slice(), self.file_pool.write(writes))
     }
 
     /// Inform the WALWriter that data writes (specified by a slice of (offset, length) tuples) are
