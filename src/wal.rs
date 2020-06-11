@@ -22,10 +22,15 @@ pub type WALBytes = Box<[u8]>;
 pub type WALFileId = u64;
 pub type WALPos = u64;
 
-#[derive(Eq, PartialEq, Copy, Clone, Debug)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
 pub struct WALRingId {
     start: WALPos,
     end: WALPos
+}
+
+impl WALRingId {
+    pub fn get_start(&self) -> WALPos { self.start }
+    pub fn get_end(&self) -> WALPos { self.end }
 }
 
 impl Ord for WALRingId {

@@ -232,10 +232,9 @@ fn test_paint_strokes() {
     }
 }
 
-type CanvasTrace = Vec<(u32, u32)>;
-
 pub struct Canvas {
-    queue: IndexMap<u32, VecDeque<u32>>,
+    waiting: HashMap<WALPos, usize>,
+    queue: IndexMap<u32, VecDeque<(u32, WALPos)>>,
     canvas: Box<[u32]>
 }
 
@@ -246,40 +245,59 @@ impl Canvas {
         canvas.resize(size, 0);
         let canvas = canvas.into_boxed_slice();
         Canvas {
+            waiting: HashMap::new(),
             queue: IndexMap::new(),
             canvas
         }
     }
 
-    fn get_queued(&mut self, pos: u32) -> &mut VecDeque<u32> {
+    fn get_waiting(&mut self, sid: WALPos) -> &mut usize {
+        match self.waiting.entry(sid) {
+            hash_map::Entry::Occupied(e) => e.into_mut(),
+            hash_map::Entry::Vacant(e) => e.insert(0)
+        }
+    }
+
+    fn get_queued(&mut self, pos: u32) -> &mut VecDeque<(u32, WALPos)> {
         match self.queue.entry(pos) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => e.insert(VecDeque::new())
         }
     }
 
-    pub fn prepaint(&mut self, strokes: &PaintStrokes) {
+    pub fn prepaint(&mut self, strokes: &PaintStrokes, sid: &WALPos) {
+        let sid = *sid;
+        let mut nwait = 0;
         for (s, e, c) in strokes.0.iter() {
             for i in *s..*e {
-                self.get_queued(i).push_back(*c)
+                nwait += 1;
+                self.get_queued(i).push_back((*c, sid))
             }
         }
+        *self.get_waiting(sid) += nwait
     }
 
     // TODO: allow customized scheduler
-    pub fn rand_paint<R: rand::Rng>(&mut self, rng: &mut R) -> u32 {
+    /// Schedule to paint one position, randomly. It optionally returns a finished batch write
+    /// identified by its start position of WALRingId.
+    pub fn rand_paint<R: rand::Rng>(&mut self, rng: &mut R) -> (Option<WALPos>, u32) {
         println!("{}", self.queue.len());
         let idx = rng.gen_range(0, self.queue.len());
         let (pos, _) = self.queue.get_index_mut(idx).unwrap();
         let pos = *pos;
-        self.paint(pos);
-        pos
+        (self.paint(pos), pos)
     }
 
-    pub fn paint(&mut self, pos: u32) {
+    pub fn paint(&mut self, pos: u32) -> Option<WALPos> {
         let q = self.queue.get_mut(&pos).unwrap();
-        self.canvas[pos as usize] = q.pop_front().unwrap();
+        let (c, sid) = q.pop_front().unwrap();
         if q.is_empty() { self.queue.remove(&pos); }
+        self.canvas[pos as usize] = c;
+        let cnt = self.waiting.get_mut(&sid).unwrap();
+        *cnt -= 1;
+        if *cnt == 0 {
+            Some(sid)
+        } else { None }
     }
 
     pub fn is_same(&self, other: &Canvas) -> bool {
@@ -298,10 +316,10 @@ fn test_canvas() {
     s2.stroke(1, 2, 2);
     assert!(canvas1.is_same(&canvas2));
     assert!(!canvas2.is_same(&canvas3));
-    canvas1.prepaint(&s1);
-    canvas1.prepaint(&s2);
-    canvas2.prepaint(&s1);
-    canvas2.prepaint(&s2);
+    canvas1.prepaint(&s1, &0);
+    canvas1.prepaint(&s2, &0);
+    canvas2.prepaint(&s1, &0);
+    canvas2.prepaint(&s2, &0);
     assert!(canvas1.is_same(&canvas2));
     RNG.with(|rng| canvas1.rand_paint(&mut *rng.borrow_mut()));
     assert!(!canvas1.is_same(&canvas2));
