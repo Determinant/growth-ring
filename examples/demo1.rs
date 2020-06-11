@@ -114,8 +114,10 @@ impl WALStore for WALStoreTest {
         Ok(logfiles.into_iter())
     }
 
-    fn apply_payload(&mut self, payload: WALBytes) -> Result<(), ()> {
-        println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap());
+    fn apply_payload(&mut self, payload: WALBytes, wal_off: WALPos) -> Result<(), ()> {
+        println!("apply_payload(payload={}, wal_off={})",
+                 std::str::from_utf8(&payload).unwrap(),
+                 wal_off);
         Ok(())
     }
 }

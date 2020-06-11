@@ -2,7 +2,7 @@
 #[allow(dead_code)]
 
 extern crate growthring;
-use growthring::wal::{WALFile, WALStore, WALPos, WALBytes};
+use growthring::wal::{WALFile, WALStore, WALPos, WALBytes, WALRingId};
 use indexmap::{IndexMap, map::Entry};
 use rand::Rng;
 use std::collections::{HashMap, hash_map};
@@ -122,6 +122,7 @@ impl<'a, G: 'static + FailGen> WALStore for WALStoreEmul<'a, G> {
     }
 
     fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
+        println!("remove {}", filename);
         if self.fgen.next_fail() { return Err(()) }
         self.state.files.remove(filename).ok_or(()).and_then(|_| Ok(()))
     }
@@ -135,9 +136,11 @@ impl<'a, G: 'static + FailGen> WALStore for WALStoreEmul<'a, G> {
         Ok(logfiles.into_iter())
     }
 
-    fn apply_payload(&mut self, payload: WALBytes) -> Result<(), ()> {
+    fn apply_payload(&mut self, payload: WALBytes, wal_off: WALPos) -> Result<(), ()> {
         if self.fgen.next_fail() { return Err(()) }
-        println!("apply_payload(payload={})", std::str::from_utf8(&payload).unwrap());
+        println!("apply_payload(payload=0x{}, wal_off={})",
+                hex::encode(&payload),
+                wal_off);
         Ok(())
     }
 }
@@ -211,17 +214,13 @@ impl PaintStrokes {
         PaintStrokes(res)
     }
 
-    pub fn gen_rand<R: rand::Rng>(min_pos: u32, max_pos: u32, max_col: u32, n: usize, rng: &mut R) -> PaintStrokes {
+    pub fn gen_rand<R: rand::Rng>(max_pos: u32, max_len: u32, max_col: u32, n: usize, rng: &mut R) -> PaintStrokes {
+        assert!(max_pos > 0);
         let mut strokes = Self::new();
         for _ in 0..n {
-            let mut s = 0;
-            let mut e = 0;
-            while s == e {
-                s = rng.gen_range(min_pos, max_pos);
-                e = rng.gen_range(min_pos, max_pos);
-            }
-            if s > e { std::mem::swap(&mut s, &mut e) }
-            strokes.stroke(s, e, rng.gen_range(0, max_col))
+            let pos = rng.gen_range(0, max_pos);
+            let len = rng.gen_range(1, max_pos - pos + 1);
+            strokes.stroke(pos, pos + len, rng.gen_range(0, max_col))
         }
         strokes
     }
@@ -249,8 +248,8 @@ fn test_paint_strokes() {
 }
 
 pub struct Canvas {
-    waiting: HashMap<WALPos, usize>,
-    queue: IndexMap<u32, VecDeque<(u32, WALPos)>>,
+    waiting: HashMap<WALRingId, usize>,
+    queue: IndexMap<u32, VecDeque<(u32, WALRingId)>>,
     canvas: Box<[u32]>
 }
 
@@ -267,36 +266,36 @@ impl Canvas {
         }
     }
 
-    fn get_waiting(&mut self, sid: WALPos) -> &mut usize {
-        match self.waiting.entry(sid) {
+    fn get_waiting(&mut self, rid: WALRingId) -> &mut usize {
+        match self.waiting.entry(rid) {
             hash_map::Entry::Occupied(e) => e.into_mut(),
             hash_map::Entry::Vacant(e) => e.insert(0)
         }
     }
 
-    fn get_queued(&mut self, pos: u32) -> &mut VecDeque<(u32, WALPos)> {
+    fn get_queued(&mut self, pos: u32) -> &mut VecDeque<(u32, WALRingId)> {
         match self.queue.entry(pos) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => e.insert(VecDeque::new())
         }
     }
 
-    pub fn prepaint(&mut self, strokes: &PaintStrokes, sid: &WALPos) {
-        let sid = *sid;
+    pub fn prepaint(&mut self, strokes: &PaintStrokes, rid: &WALRingId) {
+        let rid = *rid;
         let mut nwait = 0;
         for (s, e, c) in strokes.0.iter() {
             for i in *s..*e {
                 nwait += 1;
-                self.get_queued(i).push_back((*c, sid))
+                self.get_queued(i).push_back((*c, rid))
             }
         }
-        *self.get_waiting(sid) += nwait
+        *self.get_waiting(rid) = nwait
     }
 
     // TODO: allow customized scheduler
     /// Schedule to paint one position, randomly. It optionally returns a finished batch write
     /// identified by its start position of WALRingId.
-    pub fn rand_paint<R: rand::Rng>(&mut self, rng: &mut R) -> Option<(Option<WALPos>, u32)> {
+    pub fn rand_paint<R: rand::Rng>(&mut self, rng: &mut R) -> Option<(Option<WALRingId>, u32)> {
         if self.queue.is_empty() { return None }
         let idx = rng.gen_range(0, self.queue.len());
         let (pos, _) = self.queue.get_index_mut(idx).unwrap();
@@ -304,15 +303,15 @@ impl Canvas {
         Some((self.paint(pos), pos))
     }
 
-    pub fn paint(&mut self, pos: u32) -> Option<WALPos> {
+    pub fn paint(&mut self, pos: u32) -> Option<WALRingId> {
         let q = self.queue.get_mut(&pos).unwrap();
-        let (c, sid) = q.pop_front().unwrap();
+        let (c, rid) = q.pop_front().unwrap();
         if q.is_empty() { self.queue.remove(&pos); }
         self.canvas[pos as usize] = c;
-        let cnt = self.waiting.get_mut(&sid).unwrap();
+        let cnt = self.waiting.get_mut(&rid).unwrap();
         *cnt -= 1;
         if *cnt == 0 {
-            Some(sid)
+            Some(rid)
         } else { None }
     }
 
@@ -335,17 +334,18 @@ fn test_canvas() {
     let mut canvas1 = Canvas::new(100);
     let mut canvas2 = Canvas::new(100);
     let canvas3 = Canvas::new(101);
+    let dummy = WALRingId::empty_id();
     let (s1, s2) = RNG.with(|rng| {
         let rng = &mut *rng.borrow_mut();
-        (PaintStrokes::gen_rand(0, 100, 256, 2, rng),
-        PaintStrokes::gen_rand(0, 100, 256, 2, rng))
+        (PaintStrokes::gen_rand(100, 10, 256, 2, rng),
+        PaintStrokes::gen_rand(100, 10, 256, 2, rng))
     });
     assert!(canvas1.is_same(&canvas2));
     assert!(!canvas2.is_same(&canvas3));
-    canvas1.prepaint(&s1, &0);
-    canvas1.prepaint(&s2, &0);
-    canvas2.prepaint(&s1, &0);
-    canvas2.prepaint(&s2, &0);
+    canvas1.prepaint(&s1, &dummy);
+    canvas1.prepaint(&s2, &dummy);
+    canvas2.prepaint(&s1, &dummy);
+    canvas2.prepaint(&s2, &dummy);
     assert!(canvas1.is_same(&canvas2));
     RNG.with(|rng| canvas1.rand_paint(&mut *rng.borrow_mut()));
     assert!(!canvas1.is_same(&canvas2));
