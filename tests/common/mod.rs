@@ -16,12 +16,13 @@ thread_local! {
     pub static RNG: RefCell<rand::rngs::ThreadRng> = RefCell::new(rand::thread_rng());
 }
 
+/*
 pub fn gen_rand_letters(i: usize) -> String {
-    //let mut rng = rand::thread_rng();
     RNG.with(|rng| {
         (0..i).map(|_| (rng.borrow_mut().gen_range(0, 26) + 'a' as u8) as char).collect()
     })
 }
+*/
 
 struct FileContentEmul(RefCell<Vec<u8>>);
 
@@ -209,6 +210,21 @@ impl PaintStrokes {
         }
         PaintStrokes(res)
     }
+
+    pub fn gen_rand<R: rand::Rng>(min_pos: u32, max_pos: u32, max_col: u32, n: usize, rng: &mut R) -> PaintStrokes {
+        let mut strokes = Self::new();
+        for _ in 0..n {
+            let mut s = 0;
+            let mut e = 0;
+            while s == e {
+                s = rng.gen_range(min_pos, max_pos);
+                e = rng.gen_range(min_pos, max_pos);
+            }
+            if s > e { std::mem::swap(&mut s, &mut e) }
+            strokes.stroke(s, e, rng.gen_range(0, max_col))
+        }
+        strokes
+    }
     
     pub fn stroke(&mut self, start: u32, end: u32, color: u32) {
         self.0.push((start, end, color))
@@ -280,12 +296,12 @@ impl Canvas {
     // TODO: allow customized scheduler
     /// Schedule to paint one position, randomly. It optionally returns a finished batch write
     /// identified by its start position of WALRingId.
-    pub fn rand_paint<R: rand::Rng>(&mut self, rng: &mut R) -> (Option<WALPos>, u32) {
-        println!("{}", self.queue.len());
+    pub fn rand_paint<R: rand::Rng>(&mut self, rng: &mut R) -> Option<(Option<WALPos>, u32)> {
+        if self.queue.is_empty() { return None }
         let idx = rng.gen_range(0, self.queue.len());
         let (pos, _) = self.queue.get_index_mut(idx).unwrap();
         let pos = *pos;
-        (self.paint(pos), pos)
+        Some((self.paint(pos), pos))
     }
 
     pub fn paint(&mut self, pos: u32) -> Option<WALPos> {
@@ -303,17 +319,27 @@ impl Canvas {
     pub fn is_same(&self, other: &Canvas) -> bool {
         self.canvas.cmp(&other.canvas) == std::cmp::Ordering::Equal
     }
+
+    pub fn print(&self, max_col: usize) {
+        for r in self.canvas.chunks(max_col) {
+            for c in r.iter() {
+                print!("{:02x} ", c & 0xff);
+            }
+            println!("");
+        }
+    }
 }
 
 #[test]
 fn test_canvas() {
-    let mut canvas1 = Canvas::new(10);
-    let mut canvas2 = Canvas::new(10);
-    let canvas3 = Canvas::new(11);
-    let mut s1 = PaintStrokes::new();
-    s1.stroke(0, 1, 1);
-    let mut s2 = PaintStrokes::new();
-    s2.stroke(1, 2, 2);
+    let mut canvas1 = Canvas::new(100);
+    let mut canvas2 = Canvas::new(100);
+    let canvas3 = Canvas::new(101);
+    let (s1, s2) = RNG.with(|rng| {
+        let rng = &mut *rng.borrow_mut();
+        (PaintStrokes::gen_rand(0, 100, 256, 2, rng),
+        PaintStrokes::gen_rand(0, 100, 256, 2, rng))
+    });
     assert!(canvas1.is_same(&canvas2));
     assert!(!canvas2.is_same(&canvas3));
     canvas1.prepaint(&s1, &0);
@@ -323,8 +349,8 @@ fn test_canvas() {
     assert!(canvas1.is_same(&canvas2));
     RNG.with(|rng| canvas1.rand_paint(&mut *rng.borrow_mut()));
     assert!(!canvas1.is_same(&canvas2));
-    RNG.with(|rng| canvas1.rand_paint(&mut *rng.borrow_mut()));
-    RNG.with(|rng| canvas2.rand_paint(&mut *rng.borrow_mut()));
-    RNG.with(|rng| canvas2.rand_paint(&mut *rng.borrow_mut()));
+    RNG.with(|rng| while let Some(_) = canvas1.rand_paint(&mut *rng.borrow_mut()) {});
+    RNG.with(|rng| while let Some(_) = canvas2.rand_paint(&mut *rng.borrow_mut()) {});
     assert!(canvas1.is_same(&canvas2));
+    canvas1.print(10);
 }
