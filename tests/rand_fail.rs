@@ -1,5 +1,4 @@
 #[cfg(test)]
-
 mod common;
 
 fn single_point_failure(sim: &common::PaintingSim) {
@@ -24,7 +23,7 @@ fn test_rand_fail() {
         stroke_max_len: 10,
         stroke_max_col: 256,
         stroke_max_n: 5,
-        seed: 0
+        seed: 0,
     };
     single_point_failure(&sim);
 }

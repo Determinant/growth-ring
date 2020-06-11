@@ -1,81 +1,92 @@
 #[cfg(test)]
 #[allow(dead_code)]
-
 extern crate growthring;
-use growthring::wal::{WALFile, WALStore, WALLoader, WALPos, WALBytes, WALRingId};
-use indexmap::{IndexMap, map::Entry};
+use growthring::wal::{
+    WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore,
+};
+use indexmap::{map::Entry, IndexMap};
 use rand::Rng;
-use std::collections::{HashMap, hash_map};
 use std::cell::RefCell;
-use std::rc::Rc;
-use std::convert::TryInto;
 use std::collections::VecDeque;
-
-thread_local! {
-    //pub static RNG: RefCell<rand::rngs::StdRng> = RefCell::new(<rand::rngs::StdRng as rand::SeedableRng>::from_seed([0; 32]));
-    pub static RNG: RefCell<rand::rngs::ThreadRng> = RefCell::new(rand::thread_rng());
-}
-
-/*
-pub fn gen_rand_letters(i: usize) -> String {
-    RNG.with(|rng| {
-        (0..i).map(|_| (rng.borrow_mut().gen_range(0, 26) + 'a' as u8) as char).collect()
-    })
-}
-*/
-
-struct FileContentEmul(RefCell<Vec<u8>>);
-
-impl FileContentEmul {
-    pub fn new() -> Self { FileContentEmul(RefCell::new(Vec::new())) }
-}
-
-impl std::ops::Deref for FileContentEmul {
-    type Target = RefCell<Vec<u8>>;
-    fn deref(&self) -> &Self::Target {&self.0}
-}
+use std::collections::{hash_map, HashMap};
+use std::convert::TryInto;
+use std::rc::Rc;
 
 pub trait FailGen {
     fn next_fail(&self) -> bool;
 }
 
+struct FileContentEmul(RefCell<Vec<u8>>);
+
+impl FileContentEmul {
+    pub fn new() -> Self {
+        FileContentEmul(RefCell::new(Vec::new()))
+    }
+}
+
+impl std::ops::Deref for FileContentEmul {
+    type Target = RefCell<Vec<u8>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Emulate the a virtual file handle.
 pub struct WALFileEmul<G: FailGen> {
     file: Rc<FileContentEmul>,
-    fgen: Rc<G>
+    fgen: Rc<G>,
 }
 
 impl<G: FailGen> WALFile for WALFileEmul<G> {
     fn allocate(&self, offset: WALPos, length: usize) -> Result<(), ()> {
-        if self.fgen.next_fail() { return Err(()) }
+        if self.fgen.next_fail() {
+            return Err(());
+        }
         let offset = offset as usize;
         if offset + length > self.file.borrow().len() {
             self.file.borrow_mut().resize(offset + length, 0)
         }
-        for v in &mut self.file.borrow_mut()[offset..offset + length] { *v = 0 }
+        for v in &mut self.file.borrow_mut()[offset..offset + length] {
+            *v = 0
+        }
         Ok(())
     }
 
     fn truncate(&self, length: usize) -> Result<(), ()> {
-        if self.fgen.next_fail() { return Err(()) }
+        if self.fgen.next_fail() {
+            return Err(());
+        }
         self.file.borrow_mut().resize(length, 0);
         Ok(())
     }
 
     fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
-        if self.fgen.next_fail() { return Err(()) }
+        if self.fgen.next_fail() {
+            return Err(());
+        }
         let offset = offset as usize;
-        &self.file.borrow_mut()[offset..offset + data.len()].copy_from_slice(&data);
+        &self.file.borrow_mut()[offset..offset + data.len()]
+            .copy_from_slice(&data);
         Ok(())
     }
 
-    fn read(&self, offset: WALPos, length: usize) -> Result<Option<WALBytes>, ()> {
-        if self.fgen.next_fail() { return Err(()) }
+    fn read(
+        &self,
+        offset: WALPos,
+        length: usize,
+    ) -> Result<Option<WALBytes>, ()> {
+        if self.fgen.next_fail() {
+            return Err(());
+        }
+
         let offset = offset as usize;
         let file = self.file.borrow();
-        if offset + length > file.len() { Ok(None) }
-        else {
-            Ok(Some((&file[offset..offset + length]).to_vec().into_boxed_slice()))
+        if offset + length > file.len() {
+            Ok(None)
+        } else {
+            Ok(Some(
+                (&file[offset..offset + length]).to_vec().into_boxed_slice(),
+            ))
         }
     }
 }
@@ -85,61 +96,87 @@ pub struct WALStoreEmulState {
 }
 
 impl WALStoreEmulState {
-    pub fn new() -> Self { WALStoreEmulState { files: HashMap::new() } }
+    pub fn new() -> Self {
+        WALStoreEmulState {
+            files: HashMap::new(),
+        }
+    }
 }
 
 /// Emulate the persistent storage state.
 pub struct WALStoreEmul<'a, G, F>
 where
     G: FailGen,
-    F: FnMut(WALBytes, WALRingId) {
+    F: FnMut(WALBytes, WALRingId),
+{
     state: &'a mut WALStoreEmulState,
     fgen: Rc<G>,
-    recover: F
+    recover: F,
 }
 
 impl<'a, G: FailGen, F: FnMut(WALBytes, WALRingId)> WALStoreEmul<'a, G, F> {
-    pub fn new(state: &'a mut WALStoreEmulState, fgen: Rc<G>,
-                recover: F) -> Self {
+    pub fn new(
+        state: &'a mut WALStoreEmulState,
+        fgen: Rc<G>,
+        recover: F,
+    ) -> Self {
         WALStoreEmul {
             state,
             fgen,
-            recover
+            recover,
         }
     }
 }
 
-impl<'a, G, F> WALStore for WALStoreEmul<'a, G, F> 
+impl<'a, G, F> WALStore for WALStoreEmul<'a, G, F>
 where
-    G: 'static + FailGen, F: FnMut(WALBytes, WALRingId) {
+    G: 'static + FailGen,
+    F: FnMut(WALBytes, WALRingId),
+{
     type FileNameIter = std::vec::IntoIter<String>;
 
-    fn open_file(&mut self, filename: &str, touch: bool) -> Result<Box<dyn WALFile>, ()> {
-        if self.fgen.next_fail() { return Err(()) }
+    fn open_file(
+        &mut self,
+        filename: &str,
+        touch: bool,
+    ) -> Result<Box<dyn WALFile>, ()> {
+        if self.fgen.next_fail() {
+            return Err(());
+        }
         match self.state.files.entry(filename.to_string()) {
             hash_map::Entry::Occupied(e) => Ok(Box::new(WALFileEmul {
                 file: e.get().clone(),
-                fgen: self.fgen.clone()
+                fgen: self.fgen.clone(),
             })),
-            hash_map::Entry::Vacant(e) => if touch {
-                Ok(Box::new(WALFileEmul {
-                    file: e.insert(Rc::new(FileContentEmul::new())).clone(),
-                    fgen: self.fgen.clone()
-                }))
-            } else {
-                Err(())
+            hash_map::Entry::Vacant(e) => {
+                if touch {
+                    Ok(Box::new(WALFileEmul {
+                        file: e.insert(Rc::new(FileContentEmul::new())).clone(),
+                        fgen: self.fgen.clone(),
+                    }))
+                } else {
+                    Err(())
+                }
             }
         }
     }
 
     fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
         //println!("remove_file(filename={})", filename);
-        if self.fgen.next_fail() { return Err(()) }
-        self.state.files.remove(filename).ok_or(()).and_then(|_| Ok(()))
+        if self.fgen.next_fail() {
+            return Err(());
+        }
+        self.state
+            .files
+            .remove(filename)
+            .ok_or(())
+            .and_then(|_| Ok(()))
     }
 
     fn enumerate_files(&self) -> Result<Self::FileNameIter, ()> {
-        if self.fgen.next_fail() { return Err(()) }
+        if self.fgen.next_fail() {
+            return Err(());
+        }
         let mut logfiles = Vec::new();
         for (fname, _) in self.state.files.iter() {
             logfiles.push(fname.clone())
@@ -147,11 +184,19 @@ where
         Ok(logfiles.into_iter())
     }
 
-    fn apply_payload(&mut self, payload: WALBytes, ringid: WALRingId) -> Result<(), ()> {
-        if self.fgen.next_fail() { return Err(()) }
-        //println!("apply_payload(payload=0x{}, ringid={:?})",
-        //        hex::encode(&payload),
-        //        ringid);
+    fn apply_payload(
+        &mut self,
+        payload: WALBytes,
+        ringid: WALRingId,
+    ) -> Result<(), ()> {
+        if self.fgen.next_fail() {
+            return Err(());
+        }
+        /*
+        println!("apply_payload(payload=0x{}, ringid={:?})",
+                hex::encode(&payload),
+                ringid);
+        */
         (self.recover)(payload, ringid);
         Ok(())
     }
@@ -159,14 +204,14 @@ where
 
 pub struct SingleFailGen {
     cnt: std::cell::Cell<usize>,
-    fail_point: usize
+    fail_point: usize,
 }
 
 impl SingleFailGen {
     pub fn new(fail_point: usize) -> Self {
         SingleFailGen {
             cnt: std::cell::Cell::new(0),
-            fail_point
+            fail_point,
         }
     }
 }
@@ -182,14 +227,20 @@ impl FailGen for SingleFailGen {
 pub struct ZeroFailGen;
 
 impl FailGen for ZeroFailGen {
-    fn next_fail(&self) -> bool { false }
+    fn next_fail(&self) -> bool {
+        false
+    }
 }
 
 pub struct CountFailGen(std::cell::Cell<usize>);
 
 impl CountFailGen {
-    pub fn new() -> Self { CountFailGen(std::cell::Cell::new(0)) }
-    pub fn get_count(&self) -> usize { self.0.get() }
+    pub fn new() -> Self {
+        CountFailGen(std::cell::Cell::new(0))
+    }
+    pub fn get_count(&self) -> usize {
+        self.0.get()
+    }
 }
 
 impl FailGen for CountFailGen {
@@ -203,8 +254,12 @@ impl FailGen for CountFailGen {
 pub struct PaintStrokes(Vec<(u32, u32, u32)>);
 
 impl PaintStrokes {
-    pub fn new() -> Self { PaintStrokes(Vec::new()) }
-    pub fn clone(&self) -> Self { PaintStrokes(self.0.clone()) }
+    pub fn new() -> Self {
+        PaintStrokes(Vec::new())
+    }
+    pub fn clone(&self) -> Self {
+        PaintStrokes(self.0.clone())
+    }
     pub fn to_bytes(&self) -> WALBytes {
         let mut res: Vec<u8> = Vec::new();
         let is = std::mem::size_of::<u32>();
@@ -233,31 +288,41 @@ impl PaintStrokes {
             let (s_raw, rest1) = rest.split_at(is);
             let (e_raw, rest2) = rest1.split_at(is);
             let (c_raw, rest3) = rest2.split_at(is);
-            res.push((u32::from_le_bytes(s_raw.try_into().unwrap()),
-                    u32::from_le_bytes(e_raw.try_into().unwrap()),
-                    u32::from_le_bytes(c_raw.try_into().unwrap())));
+            res.push((
+                u32::from_le_bytes(s_raw.try_into().unwrap()),
+                u32::from_le_bytes(e_raw.try_into().unwrap()),
+                u32::from_le_bytes(c_raw.try_into().unwrap()),
+            ));
             rest = rest3
         }
         PaintStrokes(res)
     }
 
-    pub fn gen_rand<R: rand::Rng>(max_pos: u32, max_len: u32,
-                                  max_col: u32, n: usize, rng: &mut R) -> PaintStrokes {
+    pub fn gen_rand<R: rand::Rng>(
+        max_pos: u32,
+        max_len: u32,
+        max_col: u32,
+        n: usize,
+        rng: &mut R,
+    ) -> PaintStrokes {
         assert!(max_pos > 0);
         let mut strokes = Self::new();
         for _ in 0..n {
             let pos = rng.gen_range(0, max_pos);
-            let len = rng.gen_range(1, std::cmp::min(max_len, max_pos - pos + 1));
+            let len =
+                rng.gen_range(1, std::cmp::min(max_len, max_pos - pos + 1));
             strokes.stroke(pos, pos + len, rng.gen_range(0, max_col))
         }
         strokes
     }
-    
+
     pub fn stroke(&mut self, start: u32, end: u32, color: u32) {
         self.0.push((start, end, color))
     }
 
-    pub fn into_vec(self) -> Vec<(u32, u32, u32)> { self.0 }
+    pub fn into_vec(self) -> Vec<(u32, u32, u32)> {
+        self.0
+    }
 }
 
 #[test]
@@ -268,7 +333,10 @@ fn test_paint_strokes() {
     }
     let pr = p.to_bytes();
     for ((s, e, c), i) in PaintStrokes::from_bytes(&pr)
-                            .into_vec().into_iter().zip(0..) {
+        .into_vec()
+        .into_iter()
+        .zip(0..)
+    {
         assert_eq!(s, i);
         assert_eq!(e, i + 3);
         assert_eq!(c, i + 10);
@@ -278,7 +346,7 @@ fn test_paint_strokes() {
 pub struct Canvas {
     waiting: HashMap<WALRingId, usize>,
     queue: IndexMap<u32, VecDeque<(u32, WALRingId)>>,
-    canvas: Box<[u32]>
+    canvas: Box<[u32]>,
 }
 
 impl Canvas {
@@ -290,7 +358,7 @@ impl Canvas {
         Canvas {
             waiting: HashMap::new(),
             queue: IndexMap::new(),
-            canvas
+            canvas,
         }
     }
 
@@ -309,14 +377,14 @@ impl Canvas {
     fn get_waiting(&mut self, rid: WALRingId) -> &mut usize {
         match self.waiting.entry(rid) {
             hash_map::Entry::Occupied(e) => e.into_mut(),
-            hash_map::Entry::Vacant(e) => e.insert(0)
+            hash_map::Entry::Vacant(e) => e.insert(0),
         }
     }
 
     fn get_queued(&mut self, pos: u32) -> &mut VecDeque<(u32, WALRingId)> {
         match self.queue.entry(pos) {
             Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(e) => e.insert(VecDeque::new())
+            Entry::Vacant(e) => e.insert(VecDeque::new()),
         }
     }
 
@@ -335,8 +403,13 @@ impl Canvas {
     // TODO: allow customized scheduler
     /// Schedule to paint one position, randomly. It optionally returns a finished batch write
     /// identified by its start position of WALRingId.
-    pub fn rand_paint<R: rand::Rng>(&mut self, rng: &mut R) -> Option<(Option<WALRingId>, u32)> {
-        if self.is_empty() { return None }
+    pub fn rand_paint<R: rand::Rng>(
+        &mut self,
+        rng: &mut R,
+    ) -> Option<(Option<WALRingId>, u32)> {
+        if self.is_empty() {
+            return None;
+        }
         let idx = rng.gen_range(0, self.queue.len());
         let (pos, _) = self.queue.get_index_mut(idx).unwrap();
         let pos = *pos;
@@ -355,18 +428,24 @@ impl Canvas {
         self.clear_queued()
     }
 
-    pub fn is_empty(&self) -> bool { self.queue.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
 
     pub fn paint(&mut self, pos: u32) -> Option<WALRingId> {
         let q = self.queue.get_mut(&pos).unwrap();
         let (c, rid) = q.pop_front().unwrap();
-        if q.is_empty() { self.queue.remove(&pos); }
+        if q.is_empty() {
+            self.queue.remove(&pos);
+        }
         self.canvas[pos as usize] = c;
         let cnt = self.waiting.get_mut(&rid).unwrap();
         *cnt -= 1;
         if *cnt == 0 {
             Some(rid)
-        } else { None }
+        } else {
+            None
+        }
     }
 
     pub fn is_same(&self, other: &Canvas) -> bool {
@@ -387,15 +466,13 @@ impl Canvas {
 
 #[test]
 fn test_canvas() {
+    let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(42);
     let mut canvas1 = Canvas::new(100);
     let mut canvas2 = Canvas::new(100);
     let canvas3 = Canvas::new(101);
     let dummy = WALRingId::empty_id();
-    let (s1, s2) = RNG.with(|rng| {
-        let rng = &mut *rng.borrow_mut();
-        (PaintStrokes::gen_rand(100, 10, 256, 2, rng),
-        PaintStrokes::gen_rand(100, 10, 256, 2, rng))
-    });
+    let s1 = PaintStrokes::gen_rand(100, 10, 256, 2, &mut rng);
+    let s2 = PaintStrokes::gen_rand(100, 10, 256, 2, &mut rng);
     assert!(canvas1.is_same(&canvas2));
     assert!(!canvas2.is_same(&canvas3));
     canvas1.prepaint(&s1, &dummy);
@@ -403,14 +480,13 @@ fn test_canvas() {
     canvas2.prepaint(&s1, &dummy);
     canvas2.prepaint(&s2, &dummy);
     assert!(canvas1.is_same(&canvas2));
-    RNG.with(|rng| canvas1.rand_paint(&mut *rng.borrow_mut()));
+    canvas1.rand_paint(&mut rng);
     assert!(!canvas1.is_same(&canvas2));
-    RNG.with(|rng| while let Some(_) = canvas1.rand_paint(&mut *rng.borrow_mut()) {});
-    RNG.with(|rng| while let Some(_) = canvas2.rand_paint(&mut *rng.borrow_mut()) {});
+    while let Some(_) = canvas1.rand_paint(&mut rng) {}
+    while let Some(_) = canvas2.rand_paint(&mut rng) {}
     assert!(canvas1.is_same(&canvas2));
     canvas1.print(10);
 }
-
 
 pub struct PaintingSim {
     pub block_nbit: u8,
@@ -431,27 +507,36 @@ pub struct PaintingSim {
     /// max number of strokes per PaintStroke
     pub stroke_max_n: usize,
     /// random seed
-    pub seed: u64
+    pub seed: u64,
 }
-
 
 impl PaintingSim {
     fn run<G: 'static + FailGen>(
-            &self,
-            state: &mut WALStoreEmulState, canvas: &mut Canvas, wal: WALLoader,
-            ops: &mut Vec<PaintStrokes>, ringid_map: &mut HashMap<WALRingId, usize>,
-            fgen: Rc<G>) -> Result<(), ()> {
-        let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(self.seed);
-        let mut wal = wal.recover(WALStoreEmul::new(state, fgen, |_, _|{}))?;
+        &self,
+        state: &mut WALStoreEmulState,
+        canvas: &mut Canvas,
+        wal: WALLoader,
+        ops: &mut Vec<PaintStrokes>,
+        ringid_map: &mut HashMap<WALRingId, usize>,
+        fgen: Rc<G>,
+    ) -> Result<(), ()> {
+        let mut rng =
+            <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(self.seed);
+        let mut wal = wal.recover(WALStoreEmul::new(state, fgen, |_, _| {}))?;
         for _ in 0..self.n {
-            let pss = (0..self.m).map(|_|
-                PaintStrokes::gen_rand(
-                    self.csize as u32,
-                    self.stroke_max_len,
-                    self.stroke_max_col,
-                    rng.gen_range(1, self.stroke_max_n + 1), &mut rng))
-                        .collect::<Vec<PaintStrokes>>();
-            let payloads = pss.iter().map(|e| e.to_bytes()).collect::<Vec<WALBytes>>();
+            let pss = (0..self.m)
+                .map(|_| {
+                    PaintStrokes::gen_rand(
+                        self.csize as u32,
+                        self.stroke_max_len,
+                        self.stroke_max_col,
+                        rng.gen_range(1, self.stroke_max_n + 1),
+                        &mut rng,
+                    )
+                })
+                .collect::<Vec<PaintStrokes>>();
+            let payloads =
+                pss.iter().map(|e| e.to_bytes()).collect::<Vec<WALBytes>>();
             // write ahead
             let (rids, ok) = wal.grow(payloads);
             // keep track of the operations
@@ -476,7 +561,9 @@ impl PaintingSim {
                     if let Some(rid) = fin_rid {
                         wal.peel(&[rid])?
                     }
-                } else { break }
+                } else {
+                    break;
+                }
             }
         }
         // keep running until all operations are finished
@@ -499,22 +586,43 @@ impl PaintingSim {
         let mut ops: Vec<PaintStrokes> = Vec::new();
         let mut ringid_map = HashMap::new();
         let fgen = Rc::new(CountFailGen::new());
-        self.run(&mut state, &mut canvas, self.get_walloader(), &mut ops, &mut ringid_map, fgen.clone()).unwrap();
+        self.run(
+            &mut state,
+            &mut canvas,
+            self.get_walloader(),
+            &mut ops,
+            &mut ringid_map,
+            fgen.clone(),
+        )
+        .unwrap();
         fgen.get_count()
     }
 
-    fn check(state: &mut WALStoreEmulState, canvas: &mut Canvas,
-             wal: WALLoader,
-             ops: &Vec<PaintStrokes>, ringid_map: &HashMap<WALRingId, usize>) -> bool {
-        if ops.is_empty() { return true }
+    fn check(
+        state: &mut WALStoreEmulState,
+        canvas: &mut Canvas,
+        wal: WALLoader,
+        ops: &Vec<PaintStrokes>,
+        ringid_map: &HashMap<WALRingId, usize>,
+    ) -> bool {
+        if ops.is_empty() {
+            return true;
+        }
         let mut last_idx = 0;
         canvas.clear_queued();
-        wal.recover(WALStoreEmul::new(state, Rc::new(ZeroFailGen), |payload, ringid| {
-            let s = PaintStrokes::from_bytes(&payload);
-            canvas.prepaint(&s, &ringid);
-            if ringid_map.get(&ringid).is_none() { println!("{:?}", ringid) }
-            last_idx = *ringid_map.get(&ringid).unwrap() + 1;
-        })).unwrap();
+        wal.recover(WALStoreEmul::new(
+            state,
+            Rc::new(ZeroFailGen),
+            |payload, ringid| {
+                let s = PaintStrokes::from_bytes(&payload);
+                canvas.prepaint(&s, &ringid);
+                if ringid_map.get(&ringid).is_none() {
+                    println!("{:?}", ringid)
+                }
+                last_idx = *ringid_map.get(&ringid).unwrap() + 1;
+            },
+        ))
+        .unwrap();
         println!("last = {}/{}", last_idx, ops.len());
         canvas.paint_all();
         // recover complete
@@ -532,9 +640,25 @@ impl PaintingSim {
         let mut canvas = Canvas::new(self.csize);
         let mut ops: Vec<PaintStrokes> = Vec::new();
         let mut ringid_map = HashMap::new();
-        if self.run(&mut state, &mut canvas, self.get_walloader(), &mut ops, &mut ringid_map, Rc::new(fgen)).is_err() {
-            if !Self::check(&mut state, &mut canvas, self.get_walloader(), &ops, &ringid_map) {
-                return false
+        if self
+            .run(
+                &mut state,
+                &mut canvas,
+                self.get_walloader(),
+                &mut ops,
+                &mut ringid_map,
+                Rc::new(fgen),
+            )
+            .is_err()
+        {
+            if !Self::check(
+                &mut state,
+                &mut canvas,
+                self.get_walloader(),
+                &ops,
+                &ringid_map,
+            ) {
+                return false;
             }
         }
         true
