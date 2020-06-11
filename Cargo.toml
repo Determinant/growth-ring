@@ -18,6 +18,7 @@ libc = "0.2.44"
 nix = "0.17.0"
 rand = "0.7.3"
 indexmap = "1.4.0"
+futures = "0.3"
 
 [lib]
 name = "growthring"

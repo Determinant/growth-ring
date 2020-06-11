@@ -2,7 +2,7 @@
 #[allow(dead_code)]
 
 extern crate growthring;
-use growthring::wal::{WALFile, WALStore, WALPos, WALBytes, WALRingId};
+use growthring::wal::{WALFile, WALStore, WALLoader, WALPos, WALBytes, WALRingId};
 use indexmap::{IndexMap, map::Entry};
 use rand::Rng;
 use std::collections::{HashMap, hash_map};
@@ -241,12 +241,13 @@ impl PaintStrokes {
         PaintStrokes(res)
     }
 
-    pub fn gen_rand<R: rand::Rng>(max_pos: u32, max_len: u32, max_col: u32, n: usize, rng: &mut R) -> PaintStrokes {
+    pub fn gen_rand<R: rand::Rng>(max_pos: u32, max_len: u32,
+                                  max_col: u32, n: usize, rng: &mut R) -> PaintStrokes {
         assert!(max_pos > 0);
         let mut strokes = Self::new();
         for _ in 0..n {
             let pos = rng.gen_range(0, max_pos);
-            let len = rng.gen_range(1, max_pos - pos + 1);
+            let len = rng.gen_range(1, std::cmp::min(max_len, max_pos - pos + 1));
             strokes.stroke(pos, pos + len, rng.gen_range(0, max_col))
         }
         strokes
@@ -408,4 +409,134 @@ fn test_canvas() {
     RNG.with(|rng| while let Some(_) = canvas2.rand_paint(&mut *rng.borrow_mut()) {});
     assert!(canvas1.is_same(&canvas2));
     canvas1.print(10);
+}
+
+
+pub struct PaintingSim {
+    pub block_nbit: u8,
+    pub file_nbit: u8,
+    pub file_cache: usize,
+    /// number of PaintStrokes (WriteBatch)
+    pub n: usize,
+    /// number of strokes per PaintStrokes
+    pub m: usize,
+    /// number of scheduled ticks per PaintStroke submission
+    pub k: usize,
+    /// the size of canvas
+    pub csize: usize,
+    /// max length of a single stroke
+    pub stroke_max_len: u32,
+    /// max color value
+    pub stroke_max_col: u32,
+    /// max number of strokes per PaintStroke
+    pub stroke_max_n: usize,
+    /// random seed
+    pub seed: u64
+}
+
+
+impl PaintingSim {
+    fn run<G: 'static + FailGen>(
+            &self,
+            state: &mut WALStoreEmulState, canvas: &mut Canvas, wal: WALLoader,
+            ops: &mut Vec<PaintStrokes>, ringid_map: &mut HashMap<WALRingId, usize>,
+            fgen: Rc<G>) -> Result<(), ()> {
+        let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(self.seed);
+        let mut wal = wal.recover(WALStoreEmul::new(state, fgen, |_, _|{}))?;
+        for _ in 0..self.n {
+            let pss = (0..self.m).map(|_|
+                PaintStrokes::gen_rand(
+                    self.csize as u32,
+                    self.stroke_max_len,
+                    self.stroke_max_col,
+                    rng.gen_range(1, self.stroke_max_n + 1), &mut rng))
+                        .collect::<Vec<PaintStrokes>>();
+            let payloads = pss.iter().map(|e| e.to_bytes()).collect::<Vec<WALBytes>>();
+            // write ahead
+            let (rids, ok) = wal.grow(payloads);
+            // keep track of the operations
+            for (ps, rid) in pss.iter().zip(rids.iter()) {
+                ops.push(ps.clone());
+                ringid_map.insert(*rid, ops.len() - 1);
+            }
+            ok?;
+            // finish appending to WAL
+            /*
+            for rid in rids.iter() {
+                println!("got ringid: {:?}", rid);
+            }
+            */
+            // prepare data writes
+            for (ps, rid) in pss.into_iter().zip(rids.into_iter()) {
+                canvas.prepaint(&ps, &rid);
+            }
+            // run k ticks of the fine-grained scheduler
+            for _ in 0..self.k {
+                if let Some((fin_rid, _)) = canvas.rand_paint(&mut rng) {
+                    if let Some(rid) = fin_rid {
+                        wal.peel(&[rid])?
+                    }
+                } else { break }
+            }
+        }
+        // keep running until all operations are finished
+        while let Some((fin_rid, _)) = canvas.rand_paint(&mut rng) {
+            if let Some(rid) = fin_rid {
+                wal.peel(&[rid])?
+            }
+        }
+        canvas.print(40);
+        Ok(())
+    }
+
+    fn get_walloader(&self) -> WALLoader {
+        WALLoader::new(self.file_nbit, self.block_nbit, self.file_cache)
+    }
+
+    pub fn get_nticks(&self) -> usize {
+        let mut state = WALStoreEmulState::new();
+        let mut canvas = Canvas::new(self.csize);
+        let mut ops: Vec<PaintStrokes> = Vec::new();
+        let mut ringid_map = HashMap::new();
+        let fgen = Rc::new(CountFailGen::new());
+        self.run(&mut state, &mut canvas, self.get_walloader(), &mut ops, &mut ringid_map, fgen.clone()).unwrap();
+        fgen.get_count()
+    }
+
+    fn check(state: &mut WALStoreEmulState, canvas: &mut Canvas,
+             wal: WALLoader,
+             ops: &Vec<PaintStrokes>, ringid_map: &HashMap<WALRingId, usize>) -> bool {
+        if ops.is_empty() { return true }
+        let mut last_idx = 0;
+        canvas.clear_queued();
+        wal.recover(WALStoreEmul::new(state, Rc::new(ZeroFailGen), |payload, ringid| {
+            let s = PaintStrokes::from_bytes(&payload);
+            canvas.prepaint(&s, &ringid);
+            if ringid_map.get(&ringid).is_none() { println!("{:?}", ringid) }
+            last_idx = *ringid_map.get(&ringid).unwrap() + 1;
+        })).unwrap();
+        println!("last = {}/{}", last_idx, ops.len());
+        canvas.paint_all();
+        // recover complete
+        let canvas0 = canvas.new_reference(&ops[..last_idx]);
+        let res = canvas.is_same(&canvas0);
+        if !res {
+            canvas.print(40);
+            canvas0.print(40);
+        }
+        res
+    }
+
+    pub fn test<G: 'static + FailGen>(&self, fgen: G) -> bool {
+        let mut state = WALStoreEmulState::new();
+        let mut canvas = Canvas::new(self.csize);
+        let mut ops: Vec<PaintStrokes> = Vec::new();
+        let mut ringid_map = HashMap::new();
+        if self.run(&mut state, &mut canvas, self.get_walloader(), &mut ops, &mut ringid_map, Rc::new(fgen)).is_err() {
+            if !Self::check(&mut state, &mut canvas, self.get_walloader(), &ops, &ringid_map) {
+                return false
+            }
+        }
+        true
+    }
 }
