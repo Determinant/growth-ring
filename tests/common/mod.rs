@@ -92,13 +92,13 @@ impl WALStoreEmulState {
 pub struct WALStoreEmul<'a, G, F>
 where
     G: FailGen,
-    F: Fn(WALBytes, WALPos) {
+    F: FnMut(WALBytes, WALRingId) {
     state: &'a mut WALStoreEmulState,
     fgen: Rc<G>,
     recover: F
 }
 
-impl<'a, G: FailGen, F: Fn(WALBytes, WALPos)> WALStoreEmul<'a, G, F> {
+impl<'a, G: FailGen, F: FnMut(WALBytes, WALRingId)> WALStoreEmul<'a, G, F> {
     pub fn new(state: &'a mut WALStoreEmulState, fail_gen: G,
                 recover: F) -> Self {
         WALStoreEmul {
@@ -111,7 +111,7 @@ impl<'a, G: FailGen, F: Fn(WALBytes, WALPos)> WALStoreEmul<'a, G, F> {
 
 impl<'a, G, F> WALStore for WALStoreEmul<'a, G, F> 
 where
-    G: 'static + FailGen, F: Fn(WALBytes, WALPos) {
+    G: 'static + FailGen, F: FnMut(WALBytes, WALRingId) {
     type FileNameIter = std::vec::IntoIter<String>;
 
     fn open_file(&mut self, filename: &str, touch: bool) -> Result<Box<dyn WALFile>, ()> {
@@ -147,12 +147,12 @@ where
         Ok(logfiles.into_iter())
     }
 
-    fn apply_payload(&mut self, payload: WALBytes, wal_off: WALPos) -> Result<(), ()> {
+    fn apply_payload(&mut self, payload: WALBytes, ringid: WALRingId) -> Result<(), ()> {
         if self.fgen.next_fail() { return Err(()) }
-        println!("apply_payload(payload=0x{}, wal_off={})",
+        println!("apply_payload(payload=0x{}, ringid={:?})",
                 hex::encode(&payload),
-                wal_off);
-        (self.recover)(payload, wal_off);
+                ringid);
+        (self.recover)(payload, ringid);
         Ok(())
     }
 }
@@ -278,6 +278,18 @@ impl Canvas {
         }
     }
 
+    pub fn new_reference(&self, ops: &[PaintStrokes]) -> Self {
+        let mut res = Self::new(self.canvas.len());
+        for op in ops {
+            for (s, e, c) in op.0.iter() {
+                for i in *s..*e {
+                    res.canvas[i as usize] = *c
+                }
+            }
+        }
+        res
+    }
+
     fn get_waiting(&mut self, rid: WALRingId) -> &mut usize {
         match self.waiting.entry(rid) {
             hash_map::Entry::Occupied(e) => e.into_mut(),
@@ -308,12 +320,26 @@ impl Canvas {
     /// Schedule to paint one position, randomly. It optionally returns a finished batch write
     /// identified by its start position of WALRingId.
     pub fn rand_paint<R: rand::Rng>(&mut self, rng: &mut R) -> Option<(Option<WALRingId>, u32)> {
-        if self.queue.is_empty() { return None }
+        if self.is_empty() { return None }
         let idx = rng.gen_range(0, self.queue.len());
         let (pos, _) = self.queue.get_index_mut(idx).unwrap();
         let pos = *pos;
         Some((self.paint(pos), pos))
     }
+
+    pub fn clear_queued(&mut self) {
+        self.queue.clear();
+        self.waiting.clear();
+    }
+
+    pub fn paint_all(&mut self) {
+        for (k, q) in self.queue.iter() {
+            self.canvas[*k as usize] = q.back().unwrap().0;
+        }
+        self.clear_queued()
+    }
+
+    pub fn is_empty(&self) -> bool { self.queue.is_empty() }
 
     pub fn paint(&mut self, pos: u32) -> Option<WALRingId> {
         let q = self.queue.get_mut(&pos).unwrap();
@@ -332,12 +358,14 @@ impl Canvas {
     }
 
     pub fn print(&self, max_col: usize) {
+        println!("# begin canvas");
         for r in self.canvas.chunks(max_col) {
             for c in r.iter() {
                 print!("{:02x} ", c & 0xff);
             }
             println!("");
         }
+        println!("# end canvas");
     }
 }
 

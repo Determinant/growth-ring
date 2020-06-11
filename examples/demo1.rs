@@ -114,10 +114,10 @@ impl WALStore for WALStoreTest {
         Ok(logfiles.into_iter())
     }
 
-    fn apply_payload(&mut self, payload: WALBytes, wal_off: WALPos) -> Result<(), ()> {
-        println!("apply_payload(payload={}, wal_off={})",
+    fn apply_payload(&mut self, payload: WALBytes, ringid: WALRingId) -> Result<(), ()> {
+        println!("apply_payload(payload={}, ringid={:?})",
                  std::str::from_utf8(&payload).unwrap(),
-                 wal_off);
+                 ringid);
         Ok(())
     }
 }
@@ -134,7 +134,7 @@ fn test(records: Vec<String>, wal: &mut WALWriter<WALStoreTest>) -> Box<[WALRing
 fn main() {
     let mut rng = rand::thread_rng();
     let store = WALStoreTest::new("./wal_demo1", true);
-    let mut wal = WALLoader::new(store, 9, 8, 1000).recover().unwrap();
+    let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
     for _ in 0..3 {
         test(["hi", "hello", "lol"].iter().map(|s| s.to_string()).collect::<Vec<String>>(), &mut wal);
     }
@@ -143,13 +143,13 @@ fn main() {
     }
 
     let store = WALStoreTest::new("./wal_demo1", false);
-    let mut wal = WALLoader::new(store, 9, 8, 1000).recover().unwrap();
+    let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
     for _ in 0..3 {
         test(vec!["a".repeat(10), "b".repeat(100), "c".repeat(300), "d".repeat(400)], &mut wal);
     }
 
     let store = WALStoreTest::new("./wal_demo1", false);
-    let mut wal = WALLoader::new(store, 9, 8, 1000).recover().unwrap();
+    let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
     for _ in 0..3 {
         let mut ids = Vec::new();
         for _ in 0..3 {
