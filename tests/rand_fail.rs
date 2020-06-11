@@ -3,7 +3,11 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-fn _multi_point_failure(sims: &[common::PaintingSim], state: &common::WALStoreEmulState, f: usize) {
+fn _multi_point_failure(
+    sims: &[common::PaintingSim],
+    state: &common::WALStoreEmulState,
+    f: usize,
+) {
     let sim = &sims[0];
     // save the current state and start from there
     let mut state = state.clone();
@@ -66,30 +70,33 @@ fn single_point_failure1() {
 
 #[test]
 fn two_failures() {
-    let sims = [common::PaintingSim {
-        block_nbit: 5,
-        file_nbit: 6,
-        file_cache: 1000,
-        n: 10,
-        m: 5,
-        k: 100,
-        csize: 1000,
-        stroke_max_len: 10,
-        stroke_max_col: 256,
-        stroke_max_n: 3,
-        seed: 0,
-    }, common::PaintingSim {
-        block_nbit: 5,
-        file_nbit: 6,
-        file_cache: 1000,
-        n: 10,
-        m: 5,
-        k: 100,
-        csize: 1000,
-        stroke_max_len: 10,
-        stroke_max_col: 256,
-        stroke_max_n: 3,
-        seed: 0,
-    }];
+    let sims = [
+        common::PaintingSim {
+            block_nbit: 5,
+            file_nbit: 6,
+            file_cache: 1000,
+            n: 10,
+            m: 5,
+            k: 100,
+            csize: 1000,
+            stroke_max_len: 10,
+            stroke_max_col: 256,
+            stroke_max_n: 3,
+            seed: 0,
+        },
+        common::PaintingSim {
+            block_nbit: 5,
+            file_nbit: 6,
+            file_cache: 1000,
+            n: 10,
+            m: 5,
+            k: 100,
+            csize: 1000,
+            stroke_max_len: 10,
+            stroke_max_col: 256,
+            stroke_max_n: 3,
+            seed: 0,
+        },
+    ];
     multi_point_failure(&sims);
 }
