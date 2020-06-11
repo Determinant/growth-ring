@@ -36,10 +36,10 @@ fn single_point_failure(sim: &common::PaintingSim) {
 }
 
 #[test]
-fn test_rand_fail() {
+fn single_point_failure1() {
     let sim = common::PaintingSim {
-        block_nbit: 8,
-        file_nbit: 9,
+        block_nbit: 5,
+        file_nbit: 6,
         file_cache: 1000,
         n: 100,
         m: 10,

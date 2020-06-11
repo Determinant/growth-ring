@@ -600,7 +600,8 @@ impl PaintingSim {
         fgen.get_count()
     }
 
-    pub fn check(&self,
+    pub fn check(
+        &self,
         state: &mut WALStoreEmulState,
         canvas: &mut Canvas,
         wal: WALLoader,
@@ -634,19 +635,25 @@ impl PaintingSim {
             }
         } else {
             let canvas0 = canvas.new_reference(&[]);
-            if canvas.is_same(&canvas0) { None }
-            else {
-                let i0 = ops.len() - self.m - 1;
+            if canvas.is_same(&canvas0) {
+                None
+            } else {
+                let i0 = ops.len() - self.m;
                 let mut canvas0 = canvas0.new_reference(&ops[..i0]);
                 let mut res = None;
                 'outer: loop {
+                    if canvas.is_same(&canvas0) {
+                        break;
+                    }
                     for i in i0..ops.len() {
                         canvas0.prepaint(&ops[i], &WALRingId::empty_id());
                         canvas0.paint_all();
-                        if canvas.is_same(&canvas0) { break 'outer }
+                        if canvas.is_same(&canvas0) {
+                            break 'outer;
+                        }
                     }
                     res = Some(canvas0);
-                    break
+                    break;
                 }
                 res
             }
