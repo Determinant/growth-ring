@@ -411,7 +411,7 @@ impl Canvas {
             return None;
         }
         let idx = rng.gen_range(0, self.queue.len());
-        let (pos, _) = self.queue.get_index_mut(idx).unwrap();
+        let (pos, _) = self.queue.get_index(idx).unwrap();
         let pos = *pos;
         Some((self.paint(pos), pos))
     }
@@ -422,8 +422,8 @@ impl Canvas {
     }
 
     pub fn paint_all(&mut self) {
-        for (k, q) in self.queue.iter() {
-            self.canvas[*k as usize] = q.back().unwrap().0;
+        for (pos, q) in self.queue.iter() {
+            self.canvas[*pos as usize] = q.back().unwrap().0;
         }
         self.clear_queued()
     }
@@ -442,6 +442,7 @@ impl Canvas {
         let cnt = self.waiting.get_mut(&rid).unwrap();
         *cnt -= 1;
         if *cnt == 0 {
+            self.waiting.remove(&rid);
             Some(rid)
         } else {
             None
@@ -511,7 +512,7 @@ pub struct PaintingSim {
 }
 
 impl PaintingSim {
-    fn run<G: 'static + FailGen>(
+    pub fn run<G: 'static + FailGen>(
         &self,
         state: &mut WALStoreEmulState,
         canvas: &mut Canvas,
@@ -522,7 +523,8 @@ impl PaintingSim {
     ) -> Result<(), ()> {
         let mut rng =
             <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(self.seed);
-        let mut wal = wal.recover(WALStoreEmul::new(state, fgen, |_, _| {}))?;
+        let mut wal =
+            wal.recover(WALStoreEmul::new(state, fgen.clone(), |_, _| {}))?;
         for _ in 0..self.n {
             let pss = (0..self.m)
                 .map(|_| {
@@ -539,11 +541,13 @@ impl PaintingSim {
                 pss.iter().map(|e| e.to_bytes()).collect::<Vec<WALBytes>>();
             // write ahead
             let (rids, ok) = wal.grow(payloads);
+            assert_eq!(pss.len(), rids.len());
             // keep track of the operations
             for (ps, rid) in pss.iter().zip(rids.iter()) {
                 ops.push(ps.clone());
                 ringid_map.insert(*rid, ops.len() - 1);
             }
+            // grow could fail
             ok?;
             // finish appending to WAL
             /*
@@ -556,7 +560,11 @@ impl PaintingSim {
                 canvas.prepaint(&ps, &rid);
             }
             // run k ticks of the fine-grained scheduler
-            for _ in 0..self.k {
+            for _ in 0..rng.gen_range(1, self.k) {
+                // storage I/O could fail
+                if fgen.next_fail() {
+                    return Err(());
+                }
                 if let Some((fin_rid, _)) = canvas.rand_paint(&mut rng) {
                     if let Some(rid) = fin_rid {
                         wal.peel(&[rid])?
@@ -566,17 +574,11 @@ impl PaintingSim {
                 }
             }
         }
-        // keep running until all operations are finished
-        while let Some((fin_rid, _)) = canvas.rand_paint(&mut rng) {
-            if let Some(rid) = fin_rid {
-                wal.peel(&[rid])?
-            }
-        }
         canvas.print(40);
         Ok(())
     }
 
-    fn get_walloader(&self) -> WALLoader {
+    pub fn get_walloader(&self) -> WALLoader {
         WALLoader::new(self.file_nbit, self.block_nbit, self.file_cache)
     }
 
@@ -598,7 +600,7 @@ impl PaintingSim {
         fgen.get_count()
     }
 
-    fn check(
+    pub fn check(&self,
         state: &mut WALStoreEmulState,
         canvas: &mut Canvas,
         wal: WALLoader,
@@ -616,9 +618,6 @@ impl PaintingSim {
             |payload, ringid| {
                 let s = PaintStrokes::from_bytes(&payload);
                 canvas.prepaint(&s, &ringid);
-                if ringid_map.get(&ringid).is_none() {
-                    println!("{:?}", ringid)
-                }
                 last_idx = *ringid_map.get(&ringid).unwrap() + 1;
             },
         ))
@@ -626,41 +625,42 @@ impl PaintingSim {
         println!("last = {}/{}", last_idx, ops.len());
         canvas.paint_all();
         // recover complete
-        let canvas0 = canvas.new_reference(&ops[..last_idx]);
-        let res = canvas.is_same(&canvas0);
-        if !res {
+        let canvas0 = if last_idx > 0 {
+            let canvas0 = canvas.new_reference(&ops[..last_idx]);
+            if canvas.is_same(&canvas0) {
+                None
+            } else {
+                Some(canvas0)
+            }
+        } else {
+            let canvas0 = canvas.new_reference(&[]);
+            if canvas.is_same(&canvas0) { None }
+            else {
+                let i0 = ops.len() - self.m - 1;
+                let mut canvas0 = canvas0.new_reference(&ops[..i0]);
+                let mut res = None;
+                'outer: loop {
+                    for i in i0..ops.len() {
+                        canvas0.prepaint(&ops[i], &WALRingId::empty_id());
+                        canvas0.paint_all();
+                        if canvas.is_same(&canvas0) { break 'outer }
+                    }
+                    res = Some(canvas0);
+                    break
+                }
+                res
+            }
+        };
+        if let Some(canvas0) = canvas0 {
             canvas.print(40);
             canvas0.print(40);
+            false
+        } else {
+            true
         }
-        res
     }
 
-    pub fn test<G: 'static + FailGen>(&self, fgen: G) -> bool {
-        let mut state = WALStoreEmulState::new();
-        let mut canvas = Canvas::new(self.csize);
-        let mut ops: Vec<PaintStrokes> = Vec::new();
-        let mut ringid_map = HashMap::new();
-        if self
-            .run(
-                &mut state,
-                &mut canvas,
-                self.get_walloader(),
-                &mut ops,
-                &mut ringid_map,
-                Rc::new(fgen),
-            )
-            .is_err()
-        {
-            if !Self::check(
-                &mut state,
-                &mut canvas,
-                self.get_walloader(),
-                &ops,
-                &ringid_map,
-            ) {
-                return false;
-            }
-        }
-        true
+    pub fn new_canvas(&self) -> Canvas {
+        Canvas::new(self.csize)
     }
 }
