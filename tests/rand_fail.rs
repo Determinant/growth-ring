@@ -41,21 +41,22 @@ fn run<F: WALStore, R: rand::Rng>(n: usize, m: usize, k: usize,
     Ok(())
 }
 
-fn check<F: WALStore>(canvas: &mut Canvas, wal: &mut WALLoader<F>, trace: &Vec<u8>) -> bool {
+fn check<F: WALStore>(canvas: &mut Canvas, wal: &mut WALLoader<F>, trace: &Vec<u32>) -> bool {
     true
 }
 
 #[test]
 fn test_rand_fail() {
-    let fgen = SingleFailGen::new(100000);
+    let fgen = SingleFailGen::new(100);
     let n = 100;
     let m = 10;
     let k = 100;
     let mut rng = rand::thread_rng();
     let mut state = WALStoreEmulState::new();
-    let mut wal = WALLoader::new(WALStoreEmul::new(&mut state, fgen), 9, 8, 1000).recover().unwrap();
+    let mut wal = WALLoader::new(WALStoreEmul::new(&mut state, fgen, |_, _|{}), 9, 8, 1000).recover().unwrap();
     let mut trace: Vec<u32> = Vec::new();
     let mut canvas = Canvas::new(1000);
-    run(n, m, k, &mut canvas, &mut wal, &mut trace, &mut rng).unwrap();
-    WALLoader::new(common::WALStoreEmul::new(&mut state, common::ZeroFailGen), 9, 8, 1000).recover().unwrap();
+    run(n, m, k, &mut canvas, &mut wal, &mut trace, &mut rng); //.unwrap();
+    let mut wal = WALLoader::new(WALStoreEmul::new(&mut state, common::ZeroFailGen, |payload, wal_off|{}), 9, 8, 1000);
+    assert!(check(&mut canvas, &mut wal, &trace));
 }

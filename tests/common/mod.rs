@@ -89,18 +89,29 @@ impl WALStoreEmulState {
 }
 
 /// Emulate the persistent storage state.
-pub struct WALStoreEmul<'a, G: FailGen> {
+pub struct WALStoreEmul<'a, G, F>
+where
+    G: FailGen,
+    F: Fn(WALBytes, WALPos) {
     state: &'a mut WALStoreEmulState,
-    fgen: Rc<G>
+    fgen: Rc<G>,
+    recover: F
 }
 
-impl<'a, G: FailGen> WALStoreEmul<'a, G> {
-    pub fn new(state: &'a mut WALStoreEmulState, fail_gen: G) -> Self {
-        WALStoreEmul { state, fgen: Rc::new(fail_gen) }
+impl<'a, G: FailGen, F: Fn(WALBytes, WALPos)> WALStoreEmul<'a, G, F> {
+    pub fn new(state: &'a mut WALStoreEmulState, fail_gen: G,
+                recover: F) -> Self {
+        WALStoreEmul {
+            state,
+            fgen: Rc::new(fail_gen),
+            recover
+        }
     }
 }
 
-impl<'a, G: 'static + FailGen> WALStore for WALStoreEmul<'a, G> {
+impl<'a, G, F> WALStore for WALStoreEmul<'a, G, F> 
+where
+    G: 'static + FailGen, F: Fn(WALBytes, WALPos) {
     type FileNameIter = std::vec::IntoIter<String>;
 
     fn open_file(&mut self, filename: &str, touch: bool) -> Result<Box<dyn WALFile>, ()> {
@@ -122,7 +133,7 @@ impl<'a, G: 'static + FailGen> WALStore for WALStoreEmul<'a, G> {
     }
 
     fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
-        println!("remove {}", filename);
+        println!("remove_file(filename={})", filename);
         if self.fgen.next_fail() { return Err(()) }
         self.state.files.remove(filename).ok_or(()).and_then(|_| Ok(()))
     }
@@ -141,6 +152,7 @@ impl<'a, G: 'static + FailGen> WALStore for WALStoreEmul<'a, G> {
         println!("apply_payload(payload=0x{}, wal_off={})",
                 hex::encode(&payload),
                 wal_off);
+        (self.recover)(payload, wal_off);
         Ok(())
     }
 }
