@@ -101,6 +101,7 @@ impl WALStoreEmulState {
             files: HashMap::new(),
         }
     }
+    pub fn clone(&self) -> Self { WALStoreEmulState{ files: self.files.clone() }}
 }
 
 /// Emulate the persistent storage state.
@@ -251,15 +252,14 @@ impl FailGen for CountFailGen {
 }
 
 /// An ordered list of intervals: `(begin, end, color)*`.
+#[derive(Clone)]
 pub struct PaintStrokes(Vec<(u32, u32, u32)>);
 
 impl PaintStrokes {
     pub fn new() -> Self {
         PaintStrokes(Vec::new())
     }
-    pub fn clone(&self) -> Self {
-        PaintStrokes(self.0.clone())
-    }
+
     pub fn to_bytes(&self) -> WALBytes {
         let mut res: Vec<u8> = Vec::new();
         let is = std::mem::size_of::<u32>();
@@ -574,7 +574,7 @@ impl PaintingSim {
                 }
             }
         }
-        canvas.print(40);
+        //canvas.print(40);
         Ok(())
     }
 
@@ -582,14 +582,13 @@ impl PaintingSim {
         WALLoader::new(self.file_nbit, self.block_nbit, self.file_cache)
     }
 
-    pub fn get_nticks(&self) -> usize {
-        let mut state = WALStoreEmulState::new();
+    pub fn get_nticks(&self, state: &mut WALStoreEmulState) -> usize {
         let mut canvas = Canvas::new(self.csize);
         let mut ops: Vec<PaintStrokes> = Vec::new();
         let mut ringid_map = HashMap::new();
         let fgen = Rc::new(CountFailGen::new());
         self.run(
-            &mut state,
+            state,
             &mut canvas,
             self.get_walloader(),
             &mut ops,
@@ -612,6 +611,7 @@ impl PaintingSim {
             return true;
         }
         let mut last_idx = 0;
+        let mut napplied = 0;
         canvas.clear_queued();
         wal.recover(WALStoreEmul::new(
             state,
@@ -620,10 +620,11 @@ impl PaintingSim {
                 let s = PaintStrokes::from_bytes(&payload);
                 canvas.prepaint(&s, &ringid);
                 last_idx = *ringid_map.get(&ringid).unwrap() + 1;
+                napplied += 1;
             },
         ))
         .unwrap();
-        println!("last = {}/{}", last_idx, ops.len());
+        println!("last = {}/{}, applied = {}", last_idx, ops.len(), napplied);
         canvas.paint_all();
         // recover complete
         let canvas0 = if last_idx > 0 {
