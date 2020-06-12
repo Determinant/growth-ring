@@ -590,6 +590,7 @@ impl PaintingSim {
             }
         }
         //canvas.print(40);
+        assert_eq!(wal.file_pool_in_use(), 0);
         Ok(())
     }
 
