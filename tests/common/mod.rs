@@ -171,7 +171,7 @@ where
         }
     }
 
-    fn remove_file(&self, filename: &str) -> Result<(), ()> {
+    async fn remove_file(&self, filename: String) -> Result<(), ()> {
         //println!("remove_file(filename={})", filename);
         if self.fgen.next_fail() {
             return Err(());
@@ -179,7 +179,7 @@ where
         self.state
             .borrow_mut()
             .files
-            .remove(filename)
+            .remove(&filename)
             .ok_or(())
             .and_then(|_| Ok(()))
     }
@@ -581,7 +581,7 @@ impl PaintingSim {
                 }
                 if let Some((fin_rid, _)) = canvas.rand_paint(&mut rng) {
                     if let Some(rid) = fin_rid {
-                        wal.peel(&[rid])?
+                        futures::executor::block_on(wal.peel(&[rid]))?
                     }
                 } else {
                     break;

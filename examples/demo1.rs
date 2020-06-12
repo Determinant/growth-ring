@@ -101,9 +101,9 @@ impl WALStore for WALStoreTest {
         WALFileTest::new(self.rootfd, &filename).and_then(|f| Ok(Box::new(f) as Box<dyn WALFile>))
     }
 
-    fn remove_file(&self, filename: &str) -> Result<(), ()> {
+    async fn remove_file(&self, filename: String) -> Result<(), ()> {
         println!("remove_file(filename={})", filename);
-        unlinkat(Some(self.rootfd), filename, UnlinkatFlags::NoRemoveDir).or_else(|_| Err(()))
+        unlinkat(Some(self.rootfd), &filename, UnlinkatFlags::NoRemoveDir).or_else(|_| Err(()))
     }
 
     fn enumerate_files(&self) -> Result<Self::FileNameIter, ()> {
