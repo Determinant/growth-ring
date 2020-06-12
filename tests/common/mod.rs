@@ -542,15 +542,16 @@ impl PaintingSim {
             let payloads =
                 pss.iter().map(|e| e.to_bytes()).collect::<Vec<WALBytes>>();
             // write ahead
-            let (rids, ok) = wal.grow(payloads);
+            let rids = wal.grow(payloads);
             assert_eq!(pss.len(), rids.len());
+            let rids = rids.into_iter().map(|r| futures::executor::block_on(r)).collect::<Vec<_>>();
             // keep track of the operations
+            // grow could fail
             for (ps, rid) in pss.iter().zip(rids.iter()) {
                 ops.push(ps.clone());
-                ringid_map.insert(*rid, ops.len() - 1);
+                ringid_map.insert((*rid)?, ops.len() - 1);
             }
-            // grow could fail
-            futures::executor::block_on(ok)?;
+            let rids = rids.into_iter().map(|r| r.unwrap());
             // finish appending to WAL
             /*
             for rid in rids.iter() {
