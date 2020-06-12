@@ -12,6 +12,7 @@ lru = "0.5.1"
 scan_fmt = "0.2.5"
 regex = "1"
 async-trait = "0.1"
+futures = "0.3"
 
 [dev-dependencies]
 hex = "0.4.2"
@@ -19,7 +20,6 @@ libc = "0.2.44"
 nix = "0.17.0"
 rand = "0.7.3"
 indexmap = "1.4.0"
-futures = "0.3"
 
 [lib]
 name = "growthring"
