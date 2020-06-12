@@ -1,6 +1,6 @@
 #[cfg(test)]
+
 #[allow(dead_code)]
-extern crate growthring;
 use async_trait::async_trait;
 use growthring::wal::{
     WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore,
@@ -449,14 +449,15 @@ impl Canvas {
             self.queue.remove(&pos);
         }
         self.canvas[pos as usize] = c;
-        let cnt = self.waiting.get_mut(&rid).unwrap();
-        *cnt -= 1;
-        if *cnt == 0 {
-            self.waiting.remove(&rid);
-            Some(rid)
-        } else {
-            None
-        }
+        if let Some(cnt) = self.waiting.get_mut(&rid) {
+            *cnt -= 1;
+            if *cnt == 0 {
+                self.waiting.remove(&rid);
+                Some(rid)
+            } else {
+                None
+            }
+        } else { None }
     }
 
     pub fn is_same(&self, other: &Canvas) -> bool {
