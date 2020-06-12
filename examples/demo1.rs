@@ -91,16 +91,17 @@ impl Drop for WALStoreTest {
     }
 }
 
+#[async_trait(?Send)]
 impl WALStore for WALStoreTest {
     type FileNameIter = std::vec::IntoIter<String>;
 
-    fn open_file(&mut self, filename: &str, touch: bool) -> Result<Box<dyn WALFile>, ()> {
+    async fn open_file(&self, filename: &str, touch: bool) -> Result<Box<dyn WALFile>, ()> {
         println!("open_file(filename={}, touch={})", filename, touch);
         let filename = filename.to_string();
         WALFileTest::new(self.rootfd, &filename).and_then(|f| Ok(Box::new(f) as Box<dyn WALFile>))
     }
 
-    fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
+    fn remove_file(&self, filename: &str) -> Result<(), ()> {
         println!("remove_file(filename={})", filename);
         unlinkat(Some(self.rootfd), filename, UnlinkatFlags::NoRemoveDir).or_else(|_| Err(()))
     }
@@ -114,7 +115,7 @@ impl WALStore for WALStoreTest {
         Ok(logfiles.into_iter())
     }
 
-    fn apply_payload(&mut self, payload: WALBytes, ringid: WALRingId) -> Result<(), ()> {
+    fn apply_payload(&self, payload: WALBytes, ringid: WALRingId) -> Result<(), ()> {
         println!("apply_payload(payload={}, ringid={:?})",
                  std::str::from_utf8(&payload).unwrap(),
                  ringid);

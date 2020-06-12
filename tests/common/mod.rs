@@ -103,7 +103,11 @@ impl WALStoreEmulState {
             files: HashMap::new(),
         }
     }
-    pub fn clone(&self) -> Self { WALStoreEmulState{ files: self.files.clone() }}
+    pub fn clone(&self) -> Self {
+        WALStoreEmulState {
+            files: self.files.clone(),
+        }
+    }
 }
 
 /// Emulate the persistent storage state.
@@ -112,9 +116,9 @@ where
     G: FailGen,
     F: FnMut(WALBytes, WALRingId),
 {
-    state: &'a mut WALStoreEmulState,
+    state: RefCell<&'a mut WALStoreEmulState>,
     fgen: Rc<G>,
-    recover: F,
+    recover: RefCell<F>,
 }
 
 impl<'a, G: FailGen, F: FnMut(WALBytes, WALRingId)> WALStoreEmul<'a, G, F> {
@@ -123,6 +127,8 @@ impl<'a, G: FailGen, F: FnMut(WALBytes, WALRingId)> WALStoreEmul<'a, G, F> {
         fgen: Rc<G>,
         recover: F,
     ) -> Self {
+        let state = RefCell::new(state);
+        let recover = RefCell::new(recover);
         WALStoreEmul {
             state,
             fgen,
@@ -131,6 +137,7 @@ impl<'a, G: FailGen, F: FnMut(WALBytes, WALRingId)> WALStoreEmul<'a, G, F> {
     }
 }
 
+#[async_trait(?Send)]
 impl<'a, G, F> WALStore for WALStoreEmul<'a, G, F>
 where
     G: 'static + FailGen,
@@ -138,15 +145,15 @@ where
 {
     type FileNameIter = std::vec::IntoIter<String>;
 
-    fn open_file(
-        &mut self,
+    async fn open_file(
+        &self,
         filename: &str,
         touch: bool,
     ) -> Result<Box<dyn WALFile>, ()> {
         if self.fgen.next_fail() {
             return Err(());
         }
-        match self.state.files.entry(filename.to_string()) {
+        match self.state.borrow_mut().files.entry(filename.to_string()) {
             hash_map::Entry::Occupied(e) => Ok(Box::new(WALFileEmul {
                 file: e.get().clone(),
                 fgen: self.fgen.clone(),
@@ -164,12 +171,13 @@ where
         }
     }
 
-    fn remove_file(&mut self, filename: &str) -> Result<(), ()> {
+    fn remove_file(&self, filename: &str) -> Result<(), ()> {
         //println!("remove_file(filename={})", filename);
         if self.fgen.next_fail() {
             return Err(());
         }
         self.state
+            .borrow_mut()
             .files
             .remove(filename)
             .ok_or(())
@@ -181,14 +189,14 @@ where
             return Err(());
         }
         let mut logfiles = Vec::new();
-        for (fname, _) in self.state.files.iter() {
+        for (fname, _) in self.state.borrow().files.iter() {
             logfiles.push(fname.clone())
         }
         Ok(logfiles.into_iter())
     }
 
     fn apply_payload(
-        &mut self,
+        &self,
         payload: WALBytes,
         ringid: WALRingId,
     ) -> Result<(), ()> {
@@ -200,7 +208,7 @@ where
                 hex::encode(&payload),
                 ringid);
         */
-        (self.recover)(payload, ringid);
+        (&mut *self.recover.borrow_mut())(payload, ringid);
         Ok(())
     }
 }
@@ -544,7 +552,10 @@ impl PaintingSim {
             // write ahead
             let rids = wal.grow(payloads);
             assert_eq!(pss.len(), rids.len());
-            let rids = rids.into_iter().map(|r| futures::executor::block_on(r)).collect::<Vec<_>>();
+            let rids = rids
+                .into_iter()
+                .map(|r| futures::executor::block_on(r))
+                .collect::<Vec<_>>();
             // keep track of the operations
             // grow could fail
             for (ps, rid) in pss.iter().zip(rids.iter()) {
