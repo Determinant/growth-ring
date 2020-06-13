@@ -335,6 +335,10 @@ impl PaintStrokes {
     }
 }
 
+impl growthring::wal::Record for PaintStrokes {
+    fn serialize(&self) -> WALBytes { self.to_bytes() }
+}
+
 #[test]
 fn test_paint_strokes() {
     let mut p = PaintStrokes::new();
@@ -548,22 +552,20 @@ impl PaintingSim {
                     )
                 })
                 .collect::<Vec<PaintStrokes>>();
-            let payloads =
-                pss.iter().map(|e| e.to_bytes()).collect::<Vec<WALBytes>>();
+            let pss_ = pss.clone();
             // write ahead
-            let rids = wal.grow(payloads);
-            assert_eq!(pss.len(), rids.len());
-            let rids = rids
+            let rids = wal.grow(pss);
+            assert_eq!(rids.len(), self.m);
+            let recs = rids
                 .into_iter()
-                .map(|r| futures::executor::block_on(r))
-                .collect::<Vec<_>>();
-            // keep track of the operations
-            // grow could fail
-            for (ps, rid) in pss.iter().zip(rids.iter()) {
-                ops.push(ps.clone());
-                ringid_map.insert((*rid)?, ops.len() - 1);
-            }
-            let rids = rids.into_iter().map(|r| r.unwrap());
+                .zip(pss_.into_iter())
+                .map(|(r, ps)| -> Result<_, _> {
+                    ops.push(ps);
+                    let (rec, rid) = futures::executor::block_on(r)?;
+                    ringid_map.insert(rid, ops.len() - 1);
+                    Ok((rec, rid))
+                })
+                .collect::<Result<Vec<_>, ()>>()?;
             // finish appending to WAL
             /*
             for rid in rids.iter() {
@@ -571,7 +573,7 @@ impl PaintingSim {
             }
             */
             // prepare data writes
-            for (ps, rid) in pss.into_iter().zip(rids.into_iter()) {
+            for (ps, rid) in recs.into_iter() {
                 canvas.prepaint(&ps, &rid);
             }
             // run k ticks of the fine-grained scheduler

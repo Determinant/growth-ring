@@ -191,13 +191,9 @@ fn test(
     records: Vec<String>,
     wal: &mut WALWriter<WALStoreTest>,
 ) -> Vec<WALRingId> {
-    let records: Vec<WALBytes> = records
-        .into_iter()
-        .map(|s| s.into_bytes().into_boxed_slice())
-        .collect();
     let mut res = Vec::new();
-    for r in wal.grow(&records).into_iter() {
-        let ring_id = futures::executor::block_on(r).unwrap();
+    for r in wal.grow(records).into_iter() {
+        let ring_id = futures::executor::block_on(r).unwrap().1;
         println!("got ring id: {:?}", ring_id);
         res.push(ring_id);
     }
