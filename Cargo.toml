@@ -23,8 +23,6 @@ libc = "0.2.71"
 
 [dev-dependencies]
 hex = "0.4.2"
-libc = "0.2.44"
-nix = "0.17.0"
 rand = "0.7.3"
 indexmap = "1.4.0"
 

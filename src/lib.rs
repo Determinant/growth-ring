@@ -5,9 +5,13 @@
 //! ```
 //! use growthring::{WALStoreAIO, wal::WALLoader};
 //! use futures::executor::block_on;
+//! let mut loader = WALLoader::new();
+//! loader.file_nbit(9).block_nbit(8);
+//!
+//!
 //! // Start with empty WAL (truncate = true).
 //! let store = WALStoreAIO::new("./walfiles", true, |_, _| {Ok(())});
-//! let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+//! let mut wal = loader.load(store).unwrap();
 //! // Write a vector of records to WAL.
 //! for f in wal.grow(vec!["record1(foo)", "record2(bar)", "record3(foobar)"]).into_iter() {
 //!     let ring_id = block_on(f).unwrap().1;
@@ -23,7 +27,7 @@
 //!              ringid);
 //!     Ok(())
 //! });
-//! let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+//! let mut wal = loader.load(store).unwrap();
 //! // We saw some log playback, even there is no failure.
 //! // Let's try to grow the WAL to create many files.
 //! let ring_ids = wal.grow((0..100).into_iter().map(|i| "a".repeat(i)).collect::<Vec<_>>())
@@ -37,7 +41,7 @@
 //!     println!("payload.len() = {}", payload.len());
 //!     Ok(())
 //! });
-//! let wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+//! let wal = loader.load(store).unwrap();
 //! // After each recovery, the ./walfiles is empty.
 //! ```
 

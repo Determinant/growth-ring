@@ -3,7 +3,7 @@
 #[allow(dead_code)]
 use async_trait::async_trait;
 use growthring::wal::{
-    WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore,
+    WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore, RecoverPolicy
 };
 use indexmap::{map::Entry, IndexMap};
 use rand::Rng;
@@ -531,15 +531,14 @@ impl PaintingSim {
         &self,
         state: &mut WALStoreEmulState,
         canvas: &mut Canvas,
-        wal: WALLoader,
+        loader: WALLoader,
         ops: &mut Vec<PaintStrokes>,
         ringid_map: &mut HashMap<WALRingId, usize>,
         fgen: Rc<G>,
     ) -> Result<(), ()> {
         let mut rng =
             <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(self.seed);
-        let mut wal =
-            wal.recover(WALStoreEmul::new(state, fgen.clone(), |_, _| {}))?;
+        let mut wal = loader.load(WALStoreEmul::new(state, fgen.clone(), |_, _| {}))?;
         for _ in 0..self.n {
             let pss = (0..self.m)
                 .map(|_| {
@@ -597,7 +596,11 @@ impl PaintingSim {
     }
 
     pub fn get_walloader(&self) -> WALLoader {
-        WALLoader::new(self.file_nbit, self.block_nbit, self.file_cache)
+        let mut loader = WALLoader::new();
+        loader.file_nbit(self.file_nbit)
+            .block_nbit(self.block_nbit)
+            .cache_size(self.file_cache);
+        loader
     }
 
     pub fn get_nticks(&self, state: &mut WALStoreEmulState) -> usize {
@@ -631,7 +634,7 @@ impl PaintingSim {
         let mut last_idx = 0;
         let mut napplied = 0;
         canvas.clear_queued();
-        wal.recover(WALStoreEmul::new(
+        wal.load(WALStoreEmul::new(
             state,
             Rc::new(ZeroFailGen),
             |payload, ringid| {

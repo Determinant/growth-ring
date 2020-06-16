@@ -1,5 +1,5 @@
 use growthring::{
-    wal::{WALBytes, WALLoader, WALRingId, WALWriter},
+    wal::{WALBytes, WALRingId, WALLoader, WALWriter},
     WALStoreAIO,
 };
 use rand::{seq::SliceRandom, Rng};
@@ -29,8 +29,11 @@ fn recover(payload: WALBytes, ringid: WALRingId) -> Result<(), ()> {
 fn main() {
     let wal_dir = "./wal_demo1";
     let mut rng = rand::thread_rng();
+    let mut loader = WALLoader::new();
+    loader.file_nbit(9).block_nbit(8);
+
     let store = WALStoreAIO::new(&wal_dir, true, recover);
-    let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+    let mut wal = loader.load(store).unwrap();
     for _ in 0..3 {
         test(
             ["hi", "hello", "lol"]
@@ -48,7 +51,7 @@ fn main() {
     }
 
     let store = WALStoreAIO::new(&wal_dir, false, recover);
-    let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+    let mut wal = loader.load(store).unwrap();
     for _ in 0..3 {
         test(
             vec![
@@ -62,7 +65,7 @@ fn main() {
     }
 
     let store = WALStoreAIO::new(&wal_dir, false, recover);
-    let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+    let mut wal = loader.load(store).unwrap();
     for _ in 0..3 {
         let mut ids = Vec::new();
         for _ in 0..3 {
