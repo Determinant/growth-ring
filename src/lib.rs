@@ -1,3 +1,47 @@
+//! Simple and modular write-ahead-logging implementation.
+//!
+//! # Examples
+//!
+//! ```
+//! use growthring::{WALStoreAIO, wal::WALLoader};
+//! use futures::executor::block_on;
+//! // start from empty WAL (trucate = true)
+//! let store = WALStoreAIO::new("./walfiles", true, |_, _| {Ok(())});
+//! let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+//! // write a vector of records to WAL
+//! for f in wal.grow(vec!["record1(foo)", "record2(bar)", "record3(foobar)"]).into_iter() {
+//!     let ring_id = block_on(f).unwrap().1;
+//!     println!("WAL recorded record to {:?}", ring_id);
+//! }
+//!
+//!
+//! // load from WAL if exists (trucate = false)
+//! let store = WALStoreAIO::new("./walfiles", false, |payload, ringid| {
+//!     // redo the operations in your application
+//!     println!("recover(payload={}, ringid={:?})",
+//!              std::str::from_utf8(&payload).unwrap(),
+//!              ringid);
+//!     Ok(())
+//! });
+//! let mut wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+//! // We'll see the playback of the log even if there is no failure. Let's remove the old log
+//! // entries by assuming they are already persistent in your application.
+//! let ring_ids = wal.grow((0..100).into_iter().map(|i| "a".repeat(i)).collect::<Vec<_>>())
+//!                   .into_iter().map(|f| block_on(f).unwrap().1).collect::<Vec<_>>();
+//!
+//!
+//! // Let's assume all these records are not longer needed. There will only be one remaining file
+//! // in ./walfiles
+//! block_on(wal.peel(ring_ids)).unwrap();
+//!
+//! let store = WALStoreAIO::new("./walfiles", false, |payload, _| {
+//!     println!("payload.len() = {}", payload.len());
+//!     Ok(())
+//! });
+//! let wal = WALLoader::new(9, 8, 1000).recover(store).unwrap();
+//! // The ./walfiles is empty now as all records are played back.
+//! ```
+
 #[macro_use] extern crate scan_fmt;
 pub mod wal;
 

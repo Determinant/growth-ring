@@ -73,7 +73,7 @@ impl Record for String {
     fn serialize(&self) -> WALBytes { self.as_bytes().into() }
 }
 
-impl Record for str {
+impl Record for &str {
     fn serialize(&self) -> WALBytes { self.as_bytes().into() }
 }
 
