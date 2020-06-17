@@ -3,7 +3,7 @@
 #[allow(dead_code)]
 use async_trait::async_trait;
 use growthring::wal::{
-    WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore, RecoverPolicy
+    WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore
 };
 use indexmap::{map::Entry, IndexMap};
 use rand::Rng;

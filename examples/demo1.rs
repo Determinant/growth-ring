@@ -32,7 +32,7 @@ fn main() {
     let mut loader = WALLoader::new();
     loader.file_nbit(9).block_nbit(8);
 
-    let store = WALStoreAIO::new(&wal_dir, true, recover);
+    let store = WALStoreAIO::new(&wal_dir, true, recover, None).unwrap();
     let mut wal = loader.load(store).unwrap();
     for _ in 0..3 {
         test(
@@ -50,7 +50,7 @@ fn main() {
         );
     }
 
-    let store = WALStoreAIO::new(&wal_dir, false, recover);
+    let store = WALStoreAIO::new(&wal_dir, false, recover, None).unwrap();
     let mut wal = loader.load(store).unwrap();
     for _ in 0..3 {
         test(
@@ -64,7 +64,7 @@ fn main() {
         );
     }
 
-    let store = WALStoreAIO::new(&wal_dir, false, recover);
+    let store = WALStoreAIO::new(&wal_dir, false, recover, None).unwrap();
     let mut wal = loader.load(store).unwrap();
     for _ in 0..3 {
         let mut ids = Vec::new();
