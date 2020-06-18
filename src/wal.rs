@@ -574,14 +574,20 @@ pub struct WALLoader {
     recover_policy: RecoverPolicy,
 }
 
-impl WALLoader {
-    pub fn new() -> Self {
+impl Default for WALLoader {
+    fn default() -> Self {
         WALLoader {
             file_nbit: 22, // 4MB
             block_nbit: 15, // 32KB,
             cache_size: 16,
             recover_policy: RecoverPolicy::Strict
         }
+    }
+}
+
+impl WALLoader {
+    pub fn new() -> Self {
+        Default::default()
     }
 
     pub fn file_nbit(&mut self, v: u8) -> &mut Self {

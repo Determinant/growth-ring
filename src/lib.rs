@@ -50,7 +50,7 @@ pub mod wal;
 
 use async_trait::async_trait;
 use futures::executor::block_on;
-use libaiofut::{new_batch_scheduler, AIOBatchSchedulerIn, AIOManager};
+use libaiofut::{AIOBuilder, AIOManager};
 use libc::off_t;
 use nix::fcntl::{fallocate, open, openat, FallocateFlags, OFlag};
 use nix::sys::stat::Mode;
@@ -62,14 +62,14 @@ use wal::{WALBytes, WALFile, WALPos, WALRingId, WALStore};
 
 pub struct WALFileAIO {
     fd: RawFd,
-    aiomgr: Rc<AIOManager<AIOBatchSchedulerIn>>,
+    aiomgr: Rc<AIOManager>,
 }
 
 impl WALFileAIO {
     pub fn new(
         rootfd: RawFd,
         filename: &str,
-        aiomgr: Rc<AIOManager<AIOBatchSchedulerIn>>,
+        aiomgr: Rc<AIOManager>,
     ) -> Result<Self, ()> {
         openat(
             rootfd,
@@ -137,7 +137,7 @@ pub struct WALStoreAIO<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>> {
     rootfd: RawFd,
     rootpath: String,
     recover_func: RefCell<F>,
-    aiomgr: Rc<AIOManager<AIOBatchSchedulerIn>>,
+    aiomgr: Rc<AIOManager>,
 }
 
 impl<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>> WALStoreAIO<F> {
@@ -145,14 +145,13 @@ impl<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>> WALStoreAIO<F> {
         wal_dir: &str,
         truncate: bool,
         recover_func: F,
-        aiomgr: Option<AIOManager<AIOBatchSchedulerIn>>,
+        aiomgr: Option<AIOManager>,
     ) -> Result<Self, ()> {
         let recover_func = RefCell::new(recover_func);
         let rootpath = wal_dir.to_string();
         let aiomgr = Rc::new(aiomgr.ok_or(Err(())).or_else(
-            |_: Result<AIOManager<AIOBatchSchedulerIn>, ()>| {
-                AIOManager::new(new_batch_scheduler(None), 128, None, None)
-                    .or(Err(()))
+            |_: Result<AIOManager, ()>| {
+                AIOBuilder::default().build().or(Err(()))
             },
         )?);
 
