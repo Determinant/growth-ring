@@ -107,17 +107,14 @@ impl WALFile for WALFileAIO {
     }
 
     async fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
-        self.aiomgr
-            .write(self.fd, offset, data, None)
-            .await
-            .or_else(|_| Err(()))
-            .and_then(|(nwrote, data)| {
-                if nwrote == data.len() {
-                    Ok(())
-                } else {
-                    Err(())
-                }
-            })
+        let (res, data) = self.aiomgr.write(self.fd, offset, data, None).await;
+        res.or_else(|_| Err(())).and_then(|nwrote| {
+            if nwrote == data.len() {
+                Ok(())
+            } else {
+                Err(())
+            }
+        })
     }
 
     fn read(
@@ -125,11 +122,11 @@ impl WALFile for WALFileAIO {
         offset: WALPos,
         length: usize,
     ) -> Result<Option<WALBytes>, ()> {
-        block_on(self.aiomgr.read(self.fd, offset, length, None))
-            .or_else(|_| Err(()))
-            .and_then(|(nread, data)| {
-                Ok(if nread == length { Some(data) } else { None })
-            })
+        let (res, data) =
+            block_on(self.aiomgr.read(self.fd, offset, length, None));
+        res.or_else(|_| Err(())).and_then(|nread| {
+            Ok(if nread == length { Some(data) } else { None })
+        })
     }
 }
 

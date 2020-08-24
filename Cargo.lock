@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "growth-ring"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "crc",
@@ -281,9 +281,9 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libaio-futures"
-version = "0.1.4"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e435ab17c42371feda64ba459de5a248980ba96c367c29d0c7c63ab6481fc563"
+checksum = "0d069762d093188296e4c5144630afa35f5580b1cdfdcdfd89f55935e3b16a15"
 dependencies = [
  "crossbeam-channel",
  "libc",
