@@ -1,9 +1,8 @@
 #[cfg(test)]
-
 #[allow(dead_code)]
 use async_trait::async_trait;
 use growthring::wal::{
-    WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore
+    WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore,
 };
 use indexmap::{map::Entry, IndexMap};
 use rand::Rng;
@@ -111,37 +110,25 @@ impl WALStoreEmulState {
 }
 
 /// Emulate the persistent storage state.
-pub struct WALStoreEmul<'a, G, F>
+pub struct WALStoreEmul<'a, G>
 where
     G: FailGen,
-    F: FnMut(WALBytes, WALRingId),
 {
     state: RefCell<&'a mut WALStoreEmulState>,
     fgen: Rc<G>,
-    recover: RefCell<F>,
 }
 
-impl<'a, G: FailGen, F: FnMut(WALBytes, WALRingId)> WALStoreEmul<'a, G, F> {
-    pub fn new(
-        state: &'a mut WALStoreEmulState,
-        fgen: Rc<G>,
-        recover: F,
-    ) -> Self {
+impl<'a, G: FailGen> WALStoreEmul<'a, G> {
+    pub fn new(state: &'a mut WALStoreEmulState, fgen: Rc<G>) -> Self {
         let state = RefCell::new(state);
-        let recover = RefCell::new(recover);
-        WALStoreEmul {
-            state,
-            fgen,
-            recover,
-        }
+        WALStoreEmul { state, fgen }
     }
 }
 
 #[async_trait(?Send)]
-impl<'a, G, F> WALStore for WALStoreEmul<'a, G, F>
+impl<'a, G> WALStore for WALStoreEmul<'a, G>
 where
     G: 'static + FailGen,
-    F: FnMut(WALBytes, WALRingId),
 {
     type FileNameIter = std::vec::IntoIter<String>;
 
@@ -193,23 +180,6 @@ where
             logfiles.push(fname.clone())
         }
         Ok(logfiles.into_iter())
-    }
-
-    fn apply_payload(
-        &self,
-        payload: WALBytes,
-        ringid: WALRingId,
-    ) -> Result<(), ()> {
-        if self.fgen.next_fail() {
-            return Err(());
-        }
-        /*
-        println!("apply_payload(payload=0x{}, ringid={:?})",
-                hex::encode(&payload),
-                ringid);
-        */
-        (&mut *self.recover.borrow_mut())(payload, ringid);
-        Ok(())
     }
 }
 
@@ -336,7 +306,9 @@ impl PaintStrokes {
 }
 
 impl growthring::wal::Record for PaintStrokes {
-    fn serialize(&self) -> WALBytes { self.to_bytes() }
+    fn serialize(&self) -> WALBytes {
+        self.to_bytes()
+    }
 }
 
 #[test]
@@ -461,7 +433,9 @@ impl Canvas {
             } else {
                 None
             }
-        } else { None }
+        } else {
+            None
+        }
     }
 
     pub fn is_same(&self, other: &Canvas) -> bool {
@@ -538,7 +512,14 @@ impl PaintingSim {
     ) -> Result<(), ()> {
         let mut rng =
             <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(self.seed);
-        let mut wal = loader.load(WALStoreEmul::new(state, fgen.clone(), |_, _| {}))?;
+        let mut wal =
+            loader.load(WALStoreEmul::new(state, fgen.clone()), |_, _| {
+                if fgen.next_fail() {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            })?;
         for _ in 0..self.n {
             let pss = (0..self.m)
                 .map(|_| {
@@ -597,7 +578,8 @@ impl PaintingSim {
 
     pub fn get_walloader(&self) -> WALLoader {
         let mut loader = WALLoader::new();
-        loader.file_nbit(self.file_nbit)
+        loader
+            .file_nbit(self.file_nbit)
             .block_nbit(self.block_nbit)
             .cache_size(self.file_cache);
         loader
@@ -634,16 +616,16 @@ impl PaintingSim {
         let mut last_idx = 0;
         let mut napplied = 0;
         canvas.clear_queued();
-        wal.load(WALStoreEmul::new(
-            state,
-            Rc::new(ZeroFailGen),
+        wal.load(
+            WALStoreEmul::new(state, Rc::new(ZeroFailGen)),
             |payload, ringid| {
                 let s = PaintStrokes::from_bytes(&payload);
                 canvas.prepaint(&s, &ringid);
                 last_idx = *ringid_map.get(&ringid).unwrap() + 1;
                 napplied += 1;
+                Ok(())
             },
-        ))
+        )
         .unwrap();
         println!("last = {}/{}, applied = {}", last_idx, ops.len(), napplied);
         canvas.paint_all();

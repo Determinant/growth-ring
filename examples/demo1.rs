@@ -4,9 +4,9 @@ use growthring::{
 };
 use rand::{seq::SliceRandom, Rng};
 
-fn test<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>>(
+fn test(
     records: Vec<String>,
-    wal: &mut WALWriter<WALStoreAIO<F>>,
+    wal: &mut WALWriter<WALStoreAIO>,
 ) -> Vec<WALRingId> {
     let mut res = Vec::new();
     for r in wal.grow(records).into_iter() {
@@ -32,8 +32,8 @@ fn main() {
     let mut loader = WALLoader::new();
     loader.file_nbit(9).block_nbit(8);
 
-    let store = WALStoreAIO::new(&wal_dir, true, recover, None).unwrap();
-    let mut wal = loader.load(store).unwrap();
+    let store = WALStoreAIO::new(&wal_dir, true, None).unwrap();
+    let mut wal = loader.load(store, recover).unwrap();
     for _ in 0..3 {
         test(
             ["hi", "hello", "lol"]
@@ -50,8 +50,8 @@ fn main() {
         );
     }
 
-    let store = WALStoreAIO::new(&wal_dir, false, recover, None).unwrap();
-    let mut wal = loader.load(store).unwrap();
+    let store = WALStoreAIO::new(&wal_dir, false, None).unwrap();
+    let mut wal = loader.load(store, recover).unwrap();
     for _ in 0..3 {
         test(
             vec![
@@ -64,8 +64,8 @@ fn main() {
         );
     }
 
-    let store = WALStoreAIO::new(&wal_dir, false, recover, None).unwrap();
-    let mut wal = loader.load(store).unwrap();
+    let store = WALStoreAIO::new(&wal_dir, false, None).unwrap();
+    let mut wal = loader.load(store, recover).unwrap();
     for _ in 0..3 {
         let mut ids = Vec::new();
         for _ in 0..3 {

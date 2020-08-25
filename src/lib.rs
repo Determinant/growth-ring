@@ -10,8 +10,8 @@
 //!
 //!
 //! // Start with empty WAL (truncate = true).
-//! let store = WALStoreAIO::new("./walfiles", true, |_, _| {Ok(())}, None).unwrap();
-//! let mut wal = loader.load(store).unwrap();
+//! let store = WALStoreAIO::new("./walfiles", true, None).unwrap();
+//! let mut wal = loader.load(store, |_, _| {Ok(())}).unwrap();
 //! // Write a vector of records to WAL.
 //! for f in wal.grow(vec!["record1(foo)", "record2(bar)", "record3(foobar)"]).into_iter() {
 //!     let ring_id = block_on(f).unwrap().1;
@@ -20,14 +20,14 @@
 //!
 //!
 //! // Load from WAL (truncate = false).
-//! let store = WALStoreAIO::new("./walfiles", false, |payload, ringid| {
+//! let store = WALStoreAIO::new("./walfiles", false, None).unwrap();
+//! let mut wal = loader.load(store, |payload, ringid| {
 //!     // redo the operations in your application
 //!     println!("recover(payload={}, ringid={:?})",
 //!              std::str::from_utf8(&payload).unwrap(),
 //!              ringid);
 //!     Ok(())
-//! }, None).unwrap();
-//! let mut wal = loader.load(store).unwrap();
+//! }).unwrap();
 //! // We saw some log playback, even there is no failure.
 //! // Let's try to grow the WAL to create many files.
 //! let ring_ids = wal.grow((0..100).into_iter().map(|i| "a".repeat(i)).collect::<Vec<_>>())
@@ -37,11 +37,11 @@
 //! block_on(wal.peel(ring_ids)).unwrap();
 //! // There will only be one remaining file in ./walfiles.
 //!
-//! let store = WALStoreAIO::new("./walfiles", false, |payload, _| {
+//! let store = WALStoreAIO::new("./walfiles", false, None).unwrap();
+//! let wal = loader.load(store, |payload, _| {
 //!     println!("payload.len() = {}", payload.len());
 //!     Ok(())
-//! }, None).unwrap();
-//! let wal = loader.load(store).unwrap();
+//! }).unwrap();
 //! // After each recovery, the ./walfiles is empty.
 //! ```
 
@@ -55,10 +55,9 @@ use libc::off_t;
 use nix::fcntl::{fallocate, open, openat, FallocateFlags, OFlag};
 use nix::sys::stat::Mode;
 use nix::unistd::{close, ftruncate, mkdir, unlinkat, UnlinkatFlags};
-use std::cell::RefCell;
 use std::os::unix::io::RawFd;
 use std::rc::Rc;
-use wal::{WALBytes, WALFile, WALPos, WALRingId, WALStore};
+use wal::{WALBytes, WALFile, WALPos, WALStore};
 
 pub struct WALFileAIO {
     fd: RawFd,
@@ -130,21 +129,18 @@ impl WALFile for WALFileAIO {
     }
 }
 
-pub struct WALStoreAIO<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>> {
+pub struct WALStoreAIO {
     rootfd: RawFd,
     rootpath: String,
-    recover_func: RefCell<F>,
     aiomgr: Rc<AIOManager>,
 }
 
-impl<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>> WALStoreAIO<F> {
+impl WALStoreAIO {
     pub fn new(
         wal_dir: &str,
         truncate: bool,
-        recover_func: F,
         aiomgr: Option<AIOManager>,
     ) -> Result<Self, ()> {
-        let recover_func = RefCell::new(recover_func);
         let rootpath = wal_dir.to_string();
         let aiomgr = Rc::new(aiomgr.ok_or(Err(())).or_else(
             |_: Result<AIOManager, ()>| {
@@ -174,16 +170,13 @@ impl<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>> WALStoreAIO<F> {
         Ok(WALStoreAIO {
             rootfd,
             rootpath,
-            recover_func,
             aiomgr,
         })
     }
 }
 
 #[async_trait(?Send)]
-impl<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>> WALStore
-    for WALStoreAIO<F>
-{
+impl WALStore for WALStoreAIO {
     type FileNameIter = std::vec::IntoIter<String>;
 
     async fn open_file(
@@ -211,13 +204,5 @@ impl<F: FnMut(WALBytes, WALRingId) -> Result<(), ()>> WALStore
             logfiles.push(fname.unwrap().file_name().into_string().unwrap())
         }
         Ok(logfiles.into_iter())
-    }
-
-    fn apply_payload(
-        &self,
-        payload: WALBytes,
-        ringid: WALRingId,
-    ) -> Result<(), ()> {
-        (&mut *self.recover_func.borrow_mut())(payload, ringid)
     }
 }
