@@ -1,3 +1,4 @@
+use futures::executor::block_on;
 use growthring::{
     wal::{WALBytes, WALRingId, WALLoader, WALWriter},
     WALStoreAIO,
@@ -32,8 +33,8 @@ fn main() {
     let mut loader = WALLoader::new();
     loader.file_nbit(9).block_nbit(8);
 
-    let store = WALStoreAIO::new(&wal_dir, true, None).unwrap();
-    let mut wal = loader.load(store, recover).unwrap();
+    let store = WALStoreAIO::new(&wal_dir, true, None, None).unwrap();
+    let mut wal = block_on(loader.load(store, recover)).unwrap();
     for _ in 0..3 {
         test(
             ["hi", "hello", "lol"]
@@ -50,8 +51,8 @@ fn main() {
         );
     }
 
-    let store = WALStoreAIO::new(&wal_dir, false, None).unwrap();
-    let mut wal = loader.load(store, recover).unwrap();
+    let store = WALStoreAIO::new(&wal_dir, false, None, None).unwrap();
+    let mut wal = block_on(loader.load(store, recover)).unwrap();
     for _ in 0..3 {
         test(
             vec![
@@ -64,8 +65,8 @@ fn main() {
         );
     }
 
-    let store = WALStoreAIO::new(&wal_dir, false, None).unwrap();
-    let mut wal = loader.load(store, recover).unwrap();
+    let store = WALStoreAIO::new(&wal_dir, false, None, None).unwrap();
+    let mut wal = block_on(loader.load(store, recover)).unwrap();
     for _ in 0..3 {
         let mut ids = Vec::new();
         for _ in 0..3 {

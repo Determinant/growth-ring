@@ -1,6 +1,7 @@
 #[cfg(test)]
 #[allow(dead_code)]
 use async_trait::async_trait;
+use futures::executor::block_on;
 use growthring::wal::{
     WALBytes, WALFile, WALLoader, WALPos, WALRingId, WALStore,
 };
@@ -71,7 +72,7 @@ impl<G: FailGen> WALFile for WALFileEmul<G> {
         Ok(())
     }
 
-    fn read(
+    async fn read(
         &self,
         offset: WALPos,
         length: usize,
@@ -513,13 +514,13 @@ impl PaintingSim {
         let mut rng =
             <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(self.seed);
         let mut wal =
-            loader.load(WALStoreEmul::new(state, fgen.clone()), |_, _| {
+            block_on(loader.load(WALStoreEmul::new(state, fgen.clone()), |_, _| {
                 if fgen.next_fail() {
                     Err(())
                 } else {
                     Ok(())
                 }
-            })?;
+            }))?;
         for _ in 0..self.n {
             let pss = (0..self.m)
                 .map(|_| {
@@ -616,7 +617,7 @@ impl PaintingSim {
         let mut last_idx = 0;
         let mut napplied = 0;
         canvas.clear_queued();
-        wal.load(
+        block_on(wal.load(
             WALStoreEmul::new(state, Rc::new(ZeroFailGen)),
             |payload, ringid| {
                 let s = PaintStrokes::from_bytes(&payload);
@@ -625,7 +626,7 @@ impl PaintingSim {
                 napplied += 1;
                 Ok(())
             },
-        )
+        ))
         .unwrap();
         println!("last = {}/{}, applied = {}", last_idx, ops.len(), napplied);
         canvas.paint_all();
