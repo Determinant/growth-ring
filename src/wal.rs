@@ -255,6 +255,9 @@ impl<F: WALStore> WALFilePool<F> {
         &'a mut self,
         writes: Vec<(WALPos, WALBytes)>,
     ) -> Vec<Pin<Box<dyn Future<Output = Result<(), ()>> + 'a>>> {
+        if writes.is_empty() {
+            return Vec::new()
+        }
         let file_size = self.file_size;
         let file_nbit = self.file_nbit;
         let meta: Vec<(u64, u64)> = writes
