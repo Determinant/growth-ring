@@ -48,8 +48,8 @@
 #[macro_use] extern crate scan_fmt;
 pub mod wal;
 
+use aiofut::{AIOBuilder, AIOManager};
 use async_trait::async_trait;
-use libaiofut::{AIOBuilder, AIOManager};
 use libc::off_t;
 use nix::fcntl::{fallocate, open, openat, FallocateFlags, OFlag};
 use nix::sys::stat::Mode;

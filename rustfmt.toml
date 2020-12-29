@@ -6,3 +6,4 @@ inline_attribute_width = 80
 fn_params_layout = "Compressed"
 hard_tabs = false
 tab_spaces = 4
+trailing_semicolon = false

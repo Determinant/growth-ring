@@ -516,17 +516,17 @@ impl<F: WALStore> WALWriter<F> {
             while res[i].0.end <= blk_s {
                 i += 1;
                 if i >= res.len() {
-                    break 'outer;
+                    break 'outer
                 }
             }
             while res[i].0.start < blk_e {
                 res[i].1.push(j);
                 if res[i].0.end >= blk_e {
-                    break;
+                    break
                 }
                 i += 1;
                 if i >= res.len() {
-                    break 'outer;
+                    break 'outer
                 }
             }
         }
@@ -569,7 +569,7 @@ impl<F: WALStore> WALWriter<F> {
             state.io_complete.peek().and_then(|&e| Some(e.start))
         {
             if s != state.next_complete {
-                break;
+                break
             }
             let mut m = state.io_complete.pop().unwrap();
             let block_remain = block_size - (m.end & (block_size - 1));
@@ -686,7 +686,7 @@ impl WALLoader {
             if skip {
                 f.truncate(0)?;
                 file_pool.store.remove_file(fname).await?;
-                continue;
+                continue
             }
             while let Some(header_raw) = f.read(off, msize as usize).await? {
                 let ringid_start = (fid << file_pool.file_nbit) + off;
@@ -705,7 +705,7 @@ impl WALLoader {
                         // TODO: improve the behavior when CRC32 fails
                         if !self.verify_checksum(&payload, header.crc32)? {
                             skip = true;
-                            break;
+                            break
                         }
                         off += rsize as u64;
                         recover_func(
@@ -722,7 +722,7 @@ impl WALLoader {
                             f.read(off, rsize as usize).await?.ok_or(())?;
                         if !self.verify_checksum(&chunk, header.crc32)? {
                             skip = true;
-                            break;
+                            break
                         }
                         chunks = Some((vec![chunk], ringid_start));
                         off += rsize as u64;
@@ -733,7 +733,7 @@ impl WALLoader {
                                 f.read(off, rsize as usize).await?.ok_or(())?;
                             if !self.verify_checksum(&chunk, header.crc32)? {
                                 skip = true;
-                                break;
+                                break
                             }
                             chunks.push(chunk);
                         } // otherwise ignore the leftover
@@ -747,7 +747,7 @@ impl WALLoader {
                             off += rsize as u64;
                             if !self.verify_checksum(&chunk, header.crc32)? {
                                 skip = true;
-                                break;
+                                break
                             }
                             chunks.push(chunk);
                             let mut payload = Vec::new();

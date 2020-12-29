@@ -42,7 +42,7 @@ pub struct WALFileEmul<G: FailGen> {
 impl<G: FailGen> WALFile for WALFileEmul<G> {
     async fn allocate(&self, offset: WALPos, length: usize) -> Result<(), ()> {
         if self.fgen.next_fail() {
-            return Err(());
+            return Err(())
         }
         let offset = offset as usize;
         if offset + length > self.file.borrow().len() {
@@ -56,7 +56,7 @@ impl<G: FailGen> WALFile for WALFileEmul<G> {
 
     fn truncate(&self, length: usize) -> Result<(), ()> {
         if self.fgen.next_fail() {
-            return Err(());
+            return Err(())
         }
         self.file.borrow_mut().resize(length, 0);
         Ok(())
@@ -64,7 +64,7 @@ impl<G: FailGen> WALFile for WALFileEmul<G> {
 
     async fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
         if self.fgen.next_fail() {
-            return Err(());
+            return Err(())
         }
         let offset = offset as usize;
         &self.file.borrow_mut()[offset..offset + data.len()]
@@ -78,7 +78,7 @@ impl<G: FailGen> WALFile for WALFileEmul<G> {
         length: usize,
     ) -> Result<Option<WALBytes>, ()> {
         if self.fgen.next_fail() {
-            return Err(());
+            return Err(())
         }
 
         let offset = offset as usize;
@@ -139,7 +139,7 @@ where
         touch: bool,
     ) -> Result<Box<dyn WALFile>, ()> {
         if self.fgen.next_fail() {
-            return Err(());
+            return Err(())
         }
         match self.state.borrow_mut().files.entry(filename.to_string()) {
             hash_map::Entry::Occupied(e) => Ok(Box::new(WALFileEmul {
@@ -162,7 +162,7 @@ where
     async fn remove_file(&self, filename: String) -> Result<(), ()> {
         //println!("remove_file(filename={})", filename);
         if self.fgen.next_fail() {
-            return Err(());
+            return Err(())
         }
         self.state
             .borrow_mut()
@@ -174,7 +174,7 @@ where
 
     fn enumerate_files(&self) -> Result<Self::FileNameIter, ()> {
         if self.fgen.next_fail() {
-            return Err(());
+            return Err(())
         }
         let mut logfiles = Vec::new();
         for (fname, _) in self.state.borrow().files.iter() {
@@ -289,10 +289,10 @@ impl PaintStrokes {
         assert!(max_pos > 0);
         let mut strokes = Self::new();
         for _ in 0..n {
-            let pos = rng.gen_range(0, max_pos);
+            let pos = rng.gen_range(0..max_pos);
             let len =
-                rng.gen_range(1, std::cmp::min(max_len, max_pos - pos + 1));
-            strokes.stroke(pos, pos + len, rng.gen_range(0, max_col))
+                rng.gen_range(1..std::cmp::min(max_len, max_pos - pos + 1));
+            strokes.stroke(pos, pos + len, rng.gen_range(0..max_col))
         }
         strokes
     }
@@ -395,9 +395,9 @@ impl Canvas {
         rng: &mut R,
     ) -> Option<(Option<WALRingId>, u32)> {
         if self.is_empty() {
-            return None;
+            return None
         }
-        let idx = rng.gen_range(0, self.queue.len());
+        let idx = rng.gen_range(0..self.queue.len());
         let (pos, _) = self.queue.get_index(idx).unwrap();
         let pos = *pos;
         Some((self.paint(pos), pos))
@@ -513,14 +513,16 @@ impl PaintingSim {
     ) -> Result<(), ()> {
         let mut rng =
             <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(self.seed);
-        let mut wal =
-            block_on(loader.load(WALStoreEmul::new(state, fgen.clone()), |_, _| {
+        let mut wal = block_on(loader.load(
+            WALStoreEmul::new(state, fgen.clone()),
+            |_, _| {
                 if fgen.next_fail() {
                     Err(())
                 } else {
                     Ok(())
                 }
-            }))?;
+            },
+        ))?;
         for _ in 0..self.n {
             let pss = (0..self.m)
                 .map(|_| {
@@ -528,7 +530,7 @@ impl PaintingSim {
                         self.csize as u32,
                         self.stroke_max_len,
                         self.stroke_max_col,
-                        rng.gen_range(1, self.stroke_max_n + 1),
+                        rng.gen_range(1..self.stroke_max_n + 1),
                         &mut rng,
                     )
                 })
@@ -558,17 +560,17 @@ impl PaintingSim {
                 canvas.prepaint(&ps, &rid);
             }
             // run k ticks of the fine-grained scheduler
-            for _ in 0..rng.gen_range(1, self.k) {
+            for _ in 0..rng.gen_range(1..self.k) {
                 // storage I/O could fail
                 if fgen.next_fail() {
-                    return Err(());
+                    return Err(())
                 }
                 if let Some((fin_rid, _)) = canvas.rand_paint(&mut rng) {
                     if let Some(rid) = fin_rid {
                         futures::executor::block_on(wal.peel(&[rid]))?
                     }
                 } else {
-                    break;
+                    break
                 }
             }
         }
@@ -612,7 +614,7 @@ impl PaintingSim {
         ringid_map: &HashMap<WALRingId, usize>,
     ) -> bool {
         if ops.is_empty() {
-            return true;
+            return true
         }
         let mut last_idx = 0;
         let mut napplied = 0;
@@ -648,17 +650,17 @@ impl PaintingSim {
                 let mut res = None;
                 'outer: loop {
                     if canvas.is_same(&canvas0) {
-                        break;
+                        break
                     }
                     for i in i0..ops.len() {
                         canvas0.prepaint(&ops[i], &WALRingId::empty_id());
                         canvas0.paint_all();
                         if canvas.is_same(&canvas0) {
-                            break 'outer;
+                            break 'outer
                         }
                     }
                     res = Some(canvas0);
-                    break;
+                    break
                 }
                 res
             }

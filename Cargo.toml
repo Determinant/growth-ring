@@ -1,6 +1,6 @@
 [package]
 name = "growth-ring"
-version = "0.1.7"
+version = "0.1.8"
 authors = ["Determinant <tederminant@gmail.com>"]
 edition = "2018"
 homepage = "https://github.com/Determinant/growth-ring"
@@ -12,19 +12,19 @@ description = "Simple and modular write-ahead-logging implementation."
 
 [dependencies]
 crc = "1.8.1"
-lru = "0.6.0"
+lru = "0.6.3"
 scan_fmt = "0.2.5"
-regex = "1.4.0"
-async-trait = "0.1.41"
-futures = "0.3.6"
-libaio-futures = "0.1.7"
-nix = "0.18.0"
-libc = "0.2.79"
+regex = "1.4.2"
+async-trait = "0.1.42"
+futures = "0.3.8"
+libaio-futures = "0.1.8"
+nix = "0.19.1"
+libc = "0.2.81"
 
 [dev-dependencies]
 hex = "0.4.2"
-rand = "0.7.3"
-indexmap = "1.6.0"
+rand = "0.8.0"
+indexmap = "1.6.1"
 
 [lib]
 name = "growthring"

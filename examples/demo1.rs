@@ -1,6 +1,6 @@
 use futures::executor::block_on;
 use growthring::{
-    wal::{WALBytes, WALRingId, WALLoader, WALWriter},
+    wal::{WALBytes, WALLoader, WALRingId, WALWriter},
     WALStoreAIO,
 };
 use rand::{seq::SliceRandom, Rng};
@@ -72,7 +72,7 @@ fn main() {
         for _ in 0..3 {
             let mut records = Vec::new();
             for _ in 0..100 {
-                records.push("a".repeat(rng.gen_range(1, 10)))
+                records.push("a".repeat(rng.gen_range(1..10)))
             }
             for id in test(records, &mut wal).iter() {
                 ids.push(*id)
