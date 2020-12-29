@@ -242,3 +242,9 @@ impl WALStore for WALStoreAIO {
         Ok(logfiles.into_iter())
     }
 }
+
+impl Drop for WALStoreAIO {
+    fn drop(&mut self) {
+        nix::unistd::close(self.rootfd).ok();
+    }
+}
