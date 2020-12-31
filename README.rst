@@ -8,4 +8,4 @@ Documentation
 -------------
 - Latest_
 
-.. _Latest: https://docs.rs/growth-ring/0.1.5/growthring/
+.. _Latest: https://docs.rs/growth-ring/0.1.10/growthring/
