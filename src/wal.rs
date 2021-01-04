@@ -2,11 +2,11 @@ use async_trait::async_trait;
 use futures::future::{self, FutureExt, TryFutureExt};
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{hash_map, BinaryHeap, HashMap};
+use std::convert::{TryFrom, TryInto};
 use std::future::Future;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
 
-#[repr(u8)]
 enum WALRingType {
     #[allow(dead_code)]
     Null = 0x0,
@@ -20,8 +20,22 @@ enum WALRingType {
 struct WALRingBlob {
     crc32: u32,
     rsize: u32,
-    rtype: WALRingType,
+    rtype: u8,
     // payload follows
+}
+
+impl TryFrom<u8> for WALRingType {
+    type Error = ();
+    fn try_from(v: u8) -> Result<Self, Self::Error> {
+        match v {
+            x if x == WALRingType::Null as u8 => Ok(WALRingType::Null),
+            x if x == WALRingType::Full as u8 => Ok(WALRingType::Full),
+            x if x == WALRingType::First as u8 => Ok(WALRingType::First),
+            x if x == WALRingType::Middle as u8 => Ok(WALRingType::Middle),
+            x if x == WALRingType::Last as u8 => Ok(WALRingType::Last),
+            _ => Err(()),
+        }
+    }
 }
 
 type WALFileId = u64;
@@ -247,7 +261,7 @@ impl<F: WALStore> WALFilePool<F> {
         }
     }
 
-    fn get_fid(&mut self, fname: &str) -> WALFileId {
+    fn get_fid(&self, fname: &str) -> WALFileId {
         scan_fmt!(fname, "{x}.log", [hex WALFileId]).unwrap()
     }
 
@@ -454,7 +468,7 @@ impl<F: WALStore> WALWriter<F> {
                         } else {
                             (rs0, WALRingType::Full)
                         };
-                        blob.rtype = rt;
+                        blob.rtype = rt as u8;
                         &mut self.block_buffer[bbuff_cur as usize..
                             bbuff_cur as usize + payload.len()]
                             .copy_from_slice(payload);
@@ -473,7 +487,7 @@ impl<F: WALStore> WALWriter<F> {
                         } else {
                             ring_start = Some(rs0);
                             WALRingType::First
-                        };
+                        } as u8;
                         &mut self.block_buffer[bbuff_cur as usize..
                             bbuff_cur as usize + payload.len()]
                             .copy_from_slice(payload);
@@ -679,6 +693,17 @@ impl WALLoader {
         logfiles.sort();
         let mut chunks = None;
         let mut skip = false;
+        let mut scanned_files: Vec<(String, WALFileHandle<S>)> = Vec::new();
+
+        macro_rules! remove_scanned_files {
+            () => {
+                for (fname, f) in scanned_files.drain(..) {
+                    f.truncate(0)?;
+                    file_pool.store.remove_file(fname.to_string()).await?;
+                }
+            };
+        }
+
         for fname in logfiles.into_iter() {
             let fid = file_pool.get_fid(&fname);
             let f = file_pool.get_file(fid, false).await?;
@@ -697,8 +722,8 @@ impl WALLoader {
                     )
                 };
                 let rsize = header.rsize;
-                match header.rtype {
-                    WALRingType::Full => {
+                match header.rtype.try_into() {
+                    Ok(WALRingType::Full) => {
                         assert!(chunks.is_none());
                         let payload =
                             f.read(off, rsize as usize).await?.ok_or(())?;
@@ -715,8 +740,9 @@ impl WALLoader {
                                 end: (fid << file_pool.file_nbit) + off,
                             },
                         )?;
+                        remove_scanned_files!()
                     }
-                    WALRingType::First => {
+                    Ok(WALRingType::First) => {
                         assert!(chunks.is_none());
                         let chunk =
                             f.read(off, rsize as usize).await?.ok_or(())?;
@@ -727,7 +753,7 @@ impl WALLoader {
                         chunks = Some((vec![chunk], ringid_start));
                         off += rsize as u64;
                     }
-                    WALRingType::Middle => {
+                    Ok(WALRingType::Middle) => {
                         if let Some((chunks, _)) = &mut chunks {
                             let chunk =
                                 f.read(off, rsize as usize).await?.ok_or(())?;
@@ -739,7 +765,7 @@ impl WALLoader {
                         } // otherwise ignore the leftover
                         off += rsize as u64;
                     }
-                    WALRingType::Last => {
+                    Ok(WALRingType::Last) => {
                         if let Some((mut chunks, ringid_start)) = chunks.take()
                         {
                             let chunk =
@@ -767,23 +793,38 @@ impl WALLoader {
                                     end: (fid << file_pool.file_nbit) + off,
                                 },
                             )?;
+                            remove_scanned_files!()
                         }
                         // otherwise ignore the leftover
                         else {
                             off += rsize as u64;
                         }
                     }
-                    WALRingType::Null => break,
+                    Ok(WALRingType::Null) => {
+                        remove_scanned_files!();
+                        break
+                    }
+                    Err(_) => match self.recover_policy {
+                        RecoverPolicy::Strict => return Err(()),
+                        RecoverPolicy::BestEffort => {
+                            skip = true;
+                            break
+                        }
+                    },
                 }
                 let block_remain = block_size - (off & (block_size - 1));
                 if block_remain <= msize as u64 {
                     off += block_remain;
                 }
             }
+            scanned_files.push((fname, f));
+        }
+        for (fname, f) in scanned_files.into_iter() {
             f.truncate(0)?;
-            file_pool.store.remove_file(fname).await?;
+            file_pool.store.remove_file(fname.to_string()).await?;
         }
         file_pool.reset();
+
         Ok(WALWriter::new(
             WALState {
                 first_fid: 0,
