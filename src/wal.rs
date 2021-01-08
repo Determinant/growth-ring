@@ -405,6 +405,8 @@ pub struct WALWriter<F: WALStore> {
     msize: usize,
 }
 
+unsafe impl<F> Send for WALWriter<F> where F: WALStore + Send {}
+
 impl<F: WALStore> WALWriter<F> {
     fn new(state: WALState, file_pool: WALFilePool<F>) -> Self {
         let mut b = Vec::new();

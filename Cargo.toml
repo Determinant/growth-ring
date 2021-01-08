@@ -1,6 +1,6 @@
 [package]
 name = "growth-ring"
-version = "0.1.11"
+version = "0.1.12"
 authors = ["Determinant <tederminant@gmail.com>"]
 edition = "2018"
 homepage = "https://github.com/Determinant/growth-ring"

@@ -55,19 +55,19 @@ use nix::fcntl::{fallocate, open, openat, FallocateFlags, OFlag};
 use nix::sys::stat::Mode;
 use nix::unistd::{close, ftruncate, mkdir, unlinkat, UnlinkatFlags};
 use std::os::unix::io::RawFd;
-use std::rc::Rc;
+use std::sync::Arc;
 use wal::{WALBytes, WALFile, WALPos, WALStore};
 
 pub struct WALFileAIO {
     fd: RawFd,
-    aiomgr: Rc<AIOManager>,
+    aiomgr: Arc<AIOManager>,
 }
 
 impl WALFileAIO {
     pub fn new(
         rootfd: RawFd,
         filename: &str,
-        aiomgr: Rc<AIOManager>,
+        aiomgr: Arc<AIOManager>,
     ) -> Result<Self, ()> {
         openat(
             rootfd,
@@ -129,8 +129,10 @@ impl WALFile for WALFileAIO {
 
 pub struct WALStoreAIO {
     rootfd: RawFd,
-    aiomgr: Rc<AIOManager>,
+    aiomgr: Arc<AIOManager>,
 }
+
+unsafe impl Send for WALStoreAIO {}
 
 impl WALStoreAIO {
     pub fn new(
@@ -139,7 +141,7 @@ impl WALStoreAIO {
         rootfd: Option<RawFd>,
         aiomgr: Option<AIOManager>,
     ) -> Result<Self, ()> {
-        let aiomgr = Rc::new(aiomgr.ok_or(Err(())).or_else(
+        let aiomgr = Arc::new(aiomgr.ok_or(Err(())).or_else(
             |_: Result<AIOManager, ()>| {
                 AIOBuilder::default().build().or(Err(()))
             },
@@ -172,10 +174,11 @@ impl WALStoreAIO {
                 }
             }
             Some(fd) => {
+                let dirstr = std::ffi::CString::new(wal_dir).unwrap();
                 let ret = unsafe {
                     libc::mkdirat(
                         fd,
-                        std::ffi::CString::new(wal_dir).unwrap().as_ptr(),
+                        dirstr.as_ptr(),
                         libc::S_IRUSR | libc::S_IWUSR | libc::S_IXUSR,
                     )
                 };
