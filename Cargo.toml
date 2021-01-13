@@ -1,6 +1,6 @@
 [package]
 name = "growth-ring"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Determinant <tederminant@gmail.com>"]
 edition = "2018"
 homepage = "https://github.com/Determinant/growth-ring"
@@ -37,4 +37,3 @@ crate-type = ["dylib", "rlib", "staticlib"]
 
 [profile.release]
 lto = true
-debug = true
