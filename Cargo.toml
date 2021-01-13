@@ -1,6 +1,6 @@
 [package]
 name = "growth-ring"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Determinant <tederminant@gmail.com>"]
 edition = "2018"
 homepage = "https://github.com/Determinant/growth-ring"
@@ -17,7 +17,7 @@ scan_fmt = "0.2.5"
 regex = "1.4.2"
 async-trait = "0.1.42"
 futures = "0.3.8"
-libaio-futures = "0.2.0"
+libaio-futures = "0.2.1"
 nix = "0.19.1"
 libc = "0.2.81"
 
