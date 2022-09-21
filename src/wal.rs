@@ -5,6 +5,7 @@ use std::collections::{hash_map, BinaryHeap, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::future::Future;
 use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 
 enum WALRingType {
@@ -183,7 +184,12 @@ struct WALFilePool<F: WALStore> {
 }
 
 impl<F: WALStore> WALFilePool<F> {
-    fn new(store: F, file_nbit: u8, block_nbit: u8, cache_size: usize) -> Self {
+    fn new(
+        store: F,
+        file_nbit: u8,
+        block_nbit: u8,
+        cache_size: NonZeroUsize,
+    ) -> Self {
         let file_nbit = file_nbit as u64;
         let block_nbit = block_nbit as u64;
         WALFilePool {
@@ -463,7 +469,7 @@ impl<F: WALStore> WALWriter<F> {
                     if d >= rsize {
                         // the remaining rec fits in the block
                         let payload = rec;
-                        blob.crc32 = crc::crc32::checksum_ieee(payload);
+                        blob.crc32 = CRC32.checksum(payload);
                         blob.rsize = rsize;
                         let (rs, rt) = if let Some(rs) = ring_start.take() {
                             (rs, WALRingType::Last)
@@ -471,7 +477,7 @@ impl<F: WALStore> WALWriter<F> {
                             (rs0, WALRingType::Full)
                         };
                         blob.rtype = rt as u8;
-                        &mut self.block_buffer[bbuff_cur as usize..
+                        self.block_buffer[bbuff_cur as usize..
                             bbuff_cur as usize + payload.len()]
                             .copy_from_slice(payload);
                         bbuff_cur += rsize;
@@ -482,7 +488,7 @@ impl<F: WALStore> WALWriter<F> {
                     } else {
                         // the remaining block can only accommodate partial rec
                         let payload = &rec[..d as usize];
-                        blob.crc32 = crc::crc32::checksum_ieee(payload);
+                        blob.crc32 = CRC32.checksum(payload);
                         blob.rsize = d;
                         blob.rtype = if ring_start.is_some() {
                             WALRingType::Middle
@@ -490,7 +496,7 @@ impl<F: WALStore> WALWriter<F> {
                             ring_start = Some(rs0);
                             WALRingType::First
                         } as u8;
-                        &mut self.block_buffer[bbuff_cur as usize..
+                        self.block_buffer[bbuff_cur as usize..
                             bbuff_cur as usize + payload.len()]
                             .copy_from_slice(payload);
                         bbuff_cur += d;
@@ -615,7 +621,7 @@ pub enum RecoverPolicy {
 pub struct WALLoader {
     file_nbit: u8,
     block_nbit: u8,
-    cache_size: usize,
+    cache_size: NonZeroUsize,
     recover_policy: RecoverPolicy,
 }
 
@@ -624,7 +630,7 @@ impl Default for WALLoader {
         WALLoader {
             file_nbit: 22,  // 4MB
             block_nbit: 15, // 32KB,
-            cache_size: 16,
+            cache_size: NonZeroUsize::new(16).unwrap(),
             recover_policy: RecoverPolicy::Strict,
         }
     }
@@ -645,7 +651,7 @@ impl WALLoader {
         self
     }
 
-    pub fn cache_size(&mut self, v: usize) -> &mut Self {
+    pub fn cache_size(&mut self, v: NonZeroUsize) -> &mut Self {
         self.cache_size = v;
         self
     }
@@ -656,7 +662,7 @@ impl WALLoader {
     }
 
     fn verify_checksum(&self, data: &[u8], checksum: u32) -> Result<bool, ()> {
-        if checksum == crc::crc32::checksum_ieee(data) {
+        if checksum == CRC32.checksum(data) {
             Ok(true)
         } else {
             match self.recover_policy {
@@ -839,3 +845,5 @@ impl WALLoader {
         ))
     }
 }
+
+pub const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_CKSUM);

@@ -1,6 +1,6 @@
 [package]
 name = "growth-ring"
-version = "0.2.3"
+version = "0.2.5"
 authors = ["Determinant <tederminant@gmail.com>"]
 edition = "2018"
 homepage = "https://github.com/Determinant/growth-ring"
@@ -11,20 +11,20 @@ description = "Simple and modular write-ahead-logging implementation."
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-crc = "1.8.1"
-lru = "0.6.3"
-scan_fmt = "0.2.5"
-regex = "1.4.2"
-async-trait = "0.1.42"
-futures = "0.3.8"
+crc = "3.0.0"
+lru = "0.8.0"
+scan_fmt = "0.2.6"
+regex = "1.6.0"
+async-trait = "0.1.57"
+futures = "0.3.24"
 libaio-futures = "0.2.2"
-nix = "0.19.1"
-libc = "0.2.81"
+nix = "0.25.0"
+libc = "0.2.133"
 
 [dev-dependencies]
-hex = "0.4.2"
-rand = "0.8.0"
-indexmap = "1.6.1"
+hex = "0.4.3"
+rand = "0.8.5"
+indexmap = "1.9.1"
 
 [patch.crates-io]
 #libaio-futures = { path = "/home/ymf/work/current/libaio-futures" }

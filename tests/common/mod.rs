@@ -67,7 +67,7 @@ impl<G: FailGen> WALFile for WALFileEmul<G> {
             return Err(())
         }
         let offset = offset as usize;
-        &self.file.borrow_mut()[offset..offset + data.len()]
+        self.file.borrow_mut()[offset..offset + data.len()]
             .copy_from_slice(&data);
         Ok(())
     }
@@ -247,12 +247,12 @@ impl PaintStrokes {
         let len = self.0.len() as u32;
         res.resize(is * (1 + 3 * self.0.len()), 0);
         let mut rs = &mut res[..];
-        &mut rs[..is].copy_from_slice(&len.to_le_bytes());
+        rs[..is].copy_from_slice(&len.to_le_bytes());
         rs = &mut rs[is..];
         for (s, e, c) in self.0.iter() {
-            &mut rs[..is].copy_from_slice(&s.to_le_bytes());
-            &mut rs[is..is * 2].copy_from_slice(&e.to_le_bytes());
-            &mut rs[is * 2..is * 3].copy_from_slice(&c.to_le_bytes());
+            rs[..is].copy_from_slice(&s.to_le_bytes());
+            rs[is..is * 2].copy_from_slice(&e.to_le_bytes());
+            rs[is * 2..is * 3].copy_from_slice(&c.to_le_bytes());
             rs = &mut rs[is * 3..];
         }
         res.into_boxed_slice()
@@ -584,7 +584,7 @@ impl PaintingSim {
         loader
             .file_nbit(self.file_nbit)
             .block_nbit(self.block_nbit)
-            .cache_size(self.file_cache);
+            .cache_size(std::num::NonZeroUsize::new(self.file_cache).unwrap());
         loader
     }
 
