@@ -19,6 +19,7 @@ enum WALRingType {
 
 #[repr(packed)]
 struct WALRingBlob {
+    counter: u32,
     crc32: u32,
     rsize: u32,
     rtype: u8,
@@ -43,6 +44,42 @@ type WALFileId = u64;
 pub type WALBytes = Box<[u8]>;
 pub type WALPos = u64;
 
+fn get_fid(fname: &str) -> WALFileId {
+    scan_fmt!(fname, "{x}.log", [hex WALFileId]).unwrap()
+}
+
+fn get_fname(fid: WALFileId) -> String {
+    format!("{:08x}.log", fid)
+}
+
+fn sort_fids(file_nbit: u64, mut fids: Vec<u64>) -> Vec<(u8, u64)> {
+    let (min, max) = fids.iter().fold((u64::MAX, u64::MIN), |acc, fid| {
+        ((*fid).min(acc.0), (*fid).max(acc.1))
+    });
+    let fid_half = u64::MAX >> (file_nbit + 1);
+    if max - min > fid_half {
+        // we treat this as u64 overflow has happened, take proper care here
+        let mut aux: Vec<_> = fids
+            .into_iter()
+            .map(|fid| (if fid < fid_half { 1 } else { 0 }, fid))
+            .collect();
+        aux.sort();
+        aux
+    } else {
+        fids.sort();
+        fids.into_iter().map(|fid| (0, fid)).collect()
+    }
+}
+
+#[repr(C)]
+struct Header {
+    /// all preceding files (<fid) could be removed if not yet
+    first_fid: u64,
+}
+
+const HEADER_SIZE: usize = std::mem::size_of::<Header>();
+
+#[repr(C)]
 #[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
 pub struct WALRingId {
     start: WALPos,
@@ -107,6 +144,7 @@ struct WALState {
     /// number of bits for a file
     file_nbit: u64,
     next_complete: WALPos,
+    counter: u32,
     io_complete: BinaryHeap<WALRingId>,
 }
 
@@ -171,6 +209,7 @@ impl<'a, F: WALStore> Drop for WALFileHandle<'a, F> {
 /// manipulate files and their contents.
 struct WALFilePool<F: WALStore> {
     store: F,
+    header_file: Box<dyn WALFile>,
     handle_cache: RefCell<lru::LruCache<WALFileId, Box<dyn WALFile>>>,
     handle_used:
         RefCell<HashMap<WALFileId, UnsafeCell<(Box<dyn WALFile>, usize)>>>,
@@ -184,16 +223,19 @@ struct WALFilePool<F: WALStore> {
 }
 
 impl<F: WALStore> WALFilePool<F> {
-    fn new(
+    async fn new(
         store: F,
-        file_nbit: u8,
-        block_nbit: u8,
+        file_nbit: u64,
+        block_nbit: u64,
         cache_size: NonZeroUsize,
-    ) -> Self {
+    ) -> Result<Self, ()> {
         let file_nbit = file_nbit as u64;
         let block_nbit = block_nbit as u64;
-        WALFilePool {
+        let header_file = store.open_file("HEAD", true).await?;
+        header_file.truncate(HEADER_SIZE)?;
+        Ok(WALFilePool {
             store,
+            header_file,
             handle_cache: RefCell::new(lru::LruCache::new(cache_size)),
             handle_used: RefCell::new(HashMap::new()),
             last_write: UnsafeCell::new(MaybeUninit::new(Box::pin(
@@ -205,11 +247,21 @@ impl<F: WALStore> WALFilePool<F> {
             file_nbit,
             file_size: 1 << (file_nbit as u64),
             block_nbit,
-        }
+        })
     }
 
-    fn get_fname(fid: WALFileId) -> String {
-        format!("{:08x}.log", fid)
+    async fn read_header(&self) -> Result<Header, ()> {
+        let bytes = self.header_file.read(0, HEADER_SIZE).await?.unwrap();
+        let bytes: [u8; HEADER_SIZE] = (&*bytes).try_into().unwrap();
+        let header = unsafe { std::mem::transmute::<_, Header>(bytes) };
+        Ok(header)
+    }
+
+    async fn write_header(&self, header: &Header) -> Result<(), ()> {
+        let base = header as *const Header as usize as *const u8;
+        let bytes = unsafe { std::slice::from_raw_parts(base, HEADER_SIZE) };
+        self.header_file.write(0, bytes.into()).await?;
+        Ok(())
     }
 
     fn get_file<'a>(
@@ -234,7 +286,7 @@ impl<F: WALStore> WALFilePool<F> {
                         hash_map::Entry::Vacant(e) => {
                             e.insert(UnsafeCell::new((
                                 self.store
-                                    .open_file(&Self::get_fname(fid), touch)
+                                    .open_file(&get_fname(fid), touch)
                                     .await?,
                                 0,
                             )))
@@ -265,10 +317,6 @@ impl<F: WALStore> WALFilePool<F> {
             }
             _ => unreachable!(),
         }
-    }
-
-    fn get_fid(&self, fname: &str) -> WALFileId {
-        scan_fmt!(fname, "{x}.log", [hex WALFileId]).unwrap()
     }
 
     fn write<'a>(
@@ -374,7 +422,7 @@ impl<F: WALStore> WALFilePool<F> {
 
         let mut removes = Vec::new();
         for fid in fid_s..fid_e {
-            removes.push(self.store.remove_file(Self::get_fname(fid))
+            removes.push(self.store.remove_file(get_fname(fid))
                 as Pin<Box<dyn Future<Output = _> + 'a>>)
         }
         let p = async move {
@@ -469,11 +517,14 @@ impl<F: WALStore> WALWriter<F> {
                     if d >= rsize {
                         // the remaining rec fits in the block
                         let payload = rec;
+                        blob.counter = self.state.counter;
                         blob.crc32 = CRC32.checksum(payload);
                         blob.rsize = rsize;
                         let (rs, rt) = if let Some(rs) = ring_start.take() {
+                            self.state.counter += 1;
                             (rs, WALRingType::Last)
                         } else {
+                            self.state.counter += 1;
                             (rs0, WALRingType::Full)
                         };
                         blob.rtype = rt as u8;
@@ -488,6 +539,7 @@ impl<F: WALStore> WALWriter<F> {
                     } else {
                         // the remaining block can only accommodate partial rec
                         let payload = &rec[..d as usize];
+                        blob.counter = self.state.counter;
                         blob.crc32 = CRC32.checksum(payload);
                         blob.rsize = d;
                         blob.rtype = if ring_start.is_some() {
@@ -575,11 +627,13 @@ impl<F: WALStore> WALWriter<F> {
 
     /// Inform the `WALWriter` that some data writes are complete so that it could automatically
     /// remove obsolete WAL files. The given list of `WALRingId` does not need to be ordered and
-    /// could be of arbitrary length.
-    pub fn peel<'a, T: AsRef<[WALRingId]>>(
+    /// could be of arbitrary length. Use `0` for `keep_nrecords` if all obsolete WAL files
+    /// need to removed (the obsolete files do not affect the speed of recovery or correctness).
+    pub async fn peel<'a, T: AsRef<[WALRingId]>>(
         &'a mut self,
         records: T,
-    ) -> impl Future<Output = Result<(), ()>> + 'a {
+        keep_nrecords: usize,
+    ) -> Result<(), ()> {
         let msize = self.msize as u64;
         let block_size = self.block_size as u64;
         let state = &mut self.state;
@@ -602,7 +656,12 @@ impl<F: WALStore> WALWriter<F> {
         }
         let next_fid = state.next_complete >> state.file_nbit;
         state.first_fid = next_fid;
-        self.file_pool.remove_files(orig_fid, next_fid)
+        self.file_pool
+            .write_header(&Header {
+                first_fid: next_fid,
+            })
+            .await?;
+        self.file_pool.remove_files(orig_fid, next_fid).await
     }
 
     pub fn file_pool_in_use(&self) -> usize {
@@ -619,8 +678,8 @@ pub enum RecoverPolicy {
 }
 
 pub struct WALLoader {
-    file_nbit: u8,
-    block_nbit: u8,
+    file_nbit: u64,
+    block_nbit: u64,
     cache_size: NonZeroUsize,
     recover_policy: RecoverPolicy,
 }
@@ -641,12 +700,12 @@ impl WALLoader {
         Default::default()
     }
 
-    pub fn file_nbit(&mut self, v: u8) -> &mut Self {
+    pub fn file_nbit(&mut self, v: u64) -> &mut Self {
         self.file_nbit = v;
         self
     }
 
-    pub fn block_nbit(&mut self, v: u8) -> &mut Self {
+    pub fn block_nbit(&mut self, v: u64) -> &mut Self {
         self.block_nbit = v;
         self
     }
@@ -672,6 +731,203 @@ impl WALLoader {
         }
     }
 
+    fn read_records<'a, F: WALStore + 'a>(
+        &'a self,
+        f: &'a WALFileHandle<'a, F>,
+        fid: u64,
+        chunks: &'a mut Option<(Vec<WALBytes>, WALPos)>,
+    ) -> impl futures::Stream<
+        Item = Result<Option<(WALBytes, WALRingId, u32)>, ()>,
+    > + 'a {
+        let file_nbit = self.file_nbit;
+        let block_size = 1 << self.block_nbit;
+        let msize = std::mem::size_of::<WALRingBlob>();
+
+        struct Vars<'a, F: WALStore> {
+            done: bool,
+            chunks: &'a mut Option<(Vec<WALBytes>, WALPos)>,
+            off: u64,
+            f: &'a WALFileHandle<'a, F>,
+        }
+
+        let vars = std::rc::Rc::new(std::cell::RefCell::new(Vars {
+            done: false,
+            chunks,
+            off: 0,
+            f,
+        }));
+
+        futures::stream::unfold((), move |_| {
+            let v = vars.clone();
+            async move {
+                let mut v = v.borrow_mut();
+
+                macro_rules! check {
+                    ($res: expr) => {
+                        match $res {
+                            Ok(t) => t,
+                            Err(_) => die!(),
+                        }
+                    };
+                }
+
+                macro_rules! die {
+                    () => {{
+                        v.done = true;
+                        return Some((Err(()), ()))
+                    }};
+                }
+
+                macro_rules! _yield {
+                    () => {{
+                        v.done = true;
+                        return None
+                    }};
+                    ($v: expr) => {{
+                        let v = $v;
+                        catch_up!();
+                        return Some((Ok(Some(v)), ()))
+                    }};
+                }
+
+                macro_rules! catch_up {
+                    () => {{
+                        let block_remain =
+                            block_size - (v.off & (block_size - 1));
+                        if block_remain <= msize as u64 {
+                            v.off += block_remain;
+                        }
+                    }};
+                }
+
+                if v.done {
+                    return None
+                }
+                loop {
+                    let header_raw =
+                        match check!(v.f.read(v.off, msize as usize).await) {
+                            Some(h) => h,
+                            None => _yield!(),
+                        };
+                    let ringid_start = (fid << file_nbit) + v.off;
+                    v.off += msize as u64;
+                    let header = unsafe {
+                        std::mem::transmute::<*const u8, &WALRingBlob>(
+                            header_raw.as_ptr(),
+                        )
+                    };
+                    let rsize = header.rsize;
+                    match header.rtype.try_into() {
+                        Ok(WALRingType::Full) => {
+                            assert!(v.chunks.is_none());
+                            let payload = check!(check!(
+                                v.f.read(v.off, rsize as usize).await
+                            )
+                            .ok_or(()));
+                            // TODO: improve the behavior when CRC32 fails
+                            if !check!(
+                                self.verify_checksum(&payload, header.crc32)
+                            ) {
+                                die!()
+                            }
+                            v.off += rsize as u64;
+                            _yield!((
+                                payload,
+                                WALRingId {
+                                    start: ringid_start,
+                                    end: (fid << file_nbit) + v.off,
+                                },
+                                header.counter
+                            ))
+                        }
+                        Ok(WALRingType::First) => {
+                            assert!(v.chunks.is_none());
+                            let chunk = check!(check!(
+                                v.f.read(v.off, rsize as usize).await
+                            )
+                            .ok_or(()));
+                            if !check!(
+                                self.verify_checksum(&chunk, header.crc32)
+                            ) {
+                                die!()
+                            }
+                            *v.chunks = Some((vec![chunk], ringid_start));
+                            v.off += rsize as u64;
+                        }
+                        Ok(WALRingType::Middle) => {
+                            let Vars { chunks, off, f, .. } = &mut *v;
+                            if let Some((chunks, _)) = chunks {
+                                let chunk = check!(check!(
+                                    f.read(*off, rsize as usize).await
+                                )
+                                .ok_or(()));
+                                if !check!(
+                                    self.verify_checksum(&chunk, header.crc32)
+                                ) {
+                                    die!()
+                                }
+                                chunks.push(chunk);
+                            } // otherwise ignore the leftover
+                            *off += rsize as u64;
+                        }
+                        Ok(WALRingType::Last) => {
+                            if let Some((mut chunks, ringid_start)) =
+                                v.chunks.take()
+                            {
+                                let chunk = check!(check!(
+                                    v.f.read(v.off, rsize as usize).await
+                                )
+                                .ok_or(()));
+                                v.off += rsize as u64;
+                                if !check!(
+                                    self.verify_checksum(&chunk, header.crc32)
+                                ) {
+                                    die!()
+                                }
+                                chunks.push(chunk);
+                                let mut payload = Vec::new();
+                                payload.resize(
+                                    chunks
+                                        .iter()
+                                        .fold(0, |acc, v| acc + v.len()),
+                                    0,
+                                );
+                                let mut ps = &mut payload[..];
+                                for c in chunks {
+                                    ps[..c.len()].copy_from_slice(&*c);
+                                    ps = &mut ps[c.len()..];
+                                }
+                                _yield!((
+                                    payload.into_boxed_slice(),
+                                    WALRingId {
+                                        start: ringid_start,
+                                        end: (fid << file_nbit) + v.off,
+                                    },
+                                    header.counter
+                                ))
+                            }
+                            // otherwise ignore the leftover
+                            else {
+                                v.off += rsize as u64;
+                            }
+                        }
+                        Ok(WALRingType::Null) => {
+                            _yield!()
+                        }
+                        Err(_) => match self.recover_policy {
+                            RecoverPolicy::Strict => die!(),
+                            RecoverPolicy::BestEffort => {
+                                v.done = true;
+                                return Some((Ok(None), ()))
+                            }
+                        },
+                    }
+                    catch_up!()
+                }
+            }
+        })
+    }
+
     /// Recover by reading the WAL files.
     pub async fn load<
         S: WALStore,
@@ -680,6 +936,7 @@ impl WALLoader {
         &self,
         store: S,
         mut recover_func: F,
+        keep_nrecords: usize,
     ) -> Result<WALWriter<S>, ()> {
         let msize = std::mem::size_of::<WALRingBlob>();
         assert!(self.file_nbit > self.block_nbit);
@@ -690,155 +947,73 @@ impl WALLoader {
             self.file_nbit,
             self.block_nbit,
             self.cache_size,
+        )
+        .await?;
+        let logfiles = sort_fids(
+            self.file_nbit,
+            file_pool
+                .store
+                .enumerate_files()?
+                .filter(|f| filename_fmt.is_match(f))
+                .map(|s| get_fid(&s))
+                .collect(),
         );
-        let block_size = 1 << file_pool.block_nbit;
-        let mut logfiles: Vec<String> = file_pool
-            .store
-            .enumerate_files()?
-            .filter(|f| filename_fmt.is_match(f))
-            .collect();
+
+        let header = file_pool.read_header().await?;
+
         // TODO: check for missing logfiles
-        logfiles.sort();
+
         let mut chunks = None;
-        let mut skip = false;
+        let mut pre_skip = true;
         let mut scanned_files: Vec<(String, WALFileHandle<S>)> = Vec::new();
 
-        macro_rules! remove_scanned_files {
-            () => {
-                for (fname, f) in scanned_files.drain(..) {
-                    f.truncate(0)?;
-                    file_pool.store.remove_file(fname.to_string()).await?;
-                }
-            };
-        }
+        let first_fid = match logfiles.last() {
+            Some((_, fid)) => *fid + 1,
+            None => 0,
+        };
 
-        for fname in logfiles.into_iter() {
-            let fid = file_pool.get_fid(&fname);
+        file_pool.write_header(&Header { first_fid }).await?;
+
+        let counter = 0;
+
+        'outer: for (_, fid) in logfiles.into_iter() {
+            let fname = get_fname(fid);
             let f = file_pool.get_file(fid, false).await?;
-            let mut off = 0;
-            if skip {
-                f.truncate(0)?;
-                file_pool.store.remove_file(fname).await?;
+            if header.first_fid == fid {
+                pre_skip = false;
+            }
+            if pre_skip {
+                scanned_files.push((fname, f));
                 continue
             }
-            while let Some(header_raw) = f.read(off, msize as usize).await? {
-                let ringid_start = (fid << file_pool.file_nbit) + off;
-                off += msize as u64;
-                let header = unsafe {
-                    std::mem::transmute::<*const u8, &WALRingBlob>(
-                        header_raw.as_ptr(),
-                    )
-                };
-                let rsize = header.rsize;
-                match header.rtype.try_into() {
-                    Ok(WALRingType::Full) => {
-                        assert!(chunks.is_none());
-                        let payload =
-                            f.read(off, rsize as usize).await?.ok_or(())?;
-                        // TODO: improve the behavior when CRC32 fails
-                        if !self.verify_checksum(&payload, header.crc32)? {
-                            skip = true;
-                            break
-                        }
-                        off += rsize as u64;
-                        recover_func(
-                            payload,
-                            WALRingId {
-                                start: ringid_start,
-                                end: (fid << file_pool.file_nbit) + off,
-                            },
-                        )?;
-                        remove_scanned_files!()
-                    }
-                    Ok(WALRingType::First) => {
-                        assert!(chunks.is_none());
-                        let chunk =
-                            f.read(off, rsize as usize).await?.ok_or(())?;
-                        if !self.verify_checksum(&chunk, header.crc32)? {
-                            skip = true;
-                            break
-                        }
-                        chunks = Some((vec![chunk], ringid_start));
-                        off += rsize as u64;
-                    }
-                    Ok(WALRingType::Middle) => {
-                        if let Some((chunks, _)) = &mut chunks {
-                            let chunk =
-                                f.read(off, rsize as usize).await?.ok_or(())?;
-                            if !self.verify_checksum(&chunk, header.crc32)? {
-                                skip = true;
-                                break
-                            }
-                            chunks.push(chunk);
-                        } // otherwise ignore the leftover
-                        off += rsize as u64;
-                    }
-                    Ok(WALRingType::Last) => {
-                        if let Some((mut chunks, ringid_start)) = chunks.take()
-                        {
-                            let chunk =
-                                f.read(off, rsize as usize).await?.ok_or(())?;
-                            off += rsize as u64;
-                            if !self.verify_checksum(&chunk, header.crc32)? {
-                                skip = true;
-                                break
-                            }
-                            chunks.push(chunk);
-                            let mut payload = Vec::new();
-                            payload.resize(
-                                chunks.iter().fold(0, |acc, v| acc + v.len()),
-                                0,
-                            );
-                            let mut ps = &mut payload[..];
-                            for c in chunks {
-                                ps[..c.len()].copy_from_slice(&*c);
-                                ps = &mut ps[c.len()..];
-                            }
-                            recover_func(
-                                payload.into_boxed_slice(),
-                                WALRingId {
-                                    start: ringid_start,
-                                    end: (fid << file_pool.file_nbit) + off,
-                                },
-                            )?;
-                            remove_scanned_files!()
-                        }
-                        // otherwise ignore the leftover
-                        else {
-                            off += rsize as u64;
-                        }
-                    }
-                    Ok(WALRingType::Null) => {
-                        remove_scanned_files!();
-                        break
-                    }
-                    Err(_) => match self.recover_policy {
-                        RecoverPolicy::Strict => return Err(()),
-                        RecoverPolicy::BestEffort => {
-                            skip = true;
-                            break
-                        }
-                    },
-                }
-                let block_remain = block_size - (off & (block_size - 1));
-                if block_remain <= msize as u64 {
-                    off += block_remain;
+            {
+                use futures::StreamExt;
+                let stream = self.read_records(&f, fid, &mut chunks);
+                futures::pin_mut!(stream);
+                while let Some(res) = stream.next().await {
+                    let (bytes, ring_id, counter) = match res? {
+                        Some(t) => t,
+                        None => break 'outer,
+                    };
+                    recover_func(bytes, ring_id)?;
                 }
             }
             scanned_files.push((fname, f));
         }
+
         for (fname, f) in scanned_files.into_iter() {
             f.truncate(0)?;
-            file_pool.store.remove_file(fname.to_string()).await?;
+            file_pool.store.remove_file(fname).await?;
         }
         file_pool.reset();
 
         Ok(WALWriter::new(
             WALState {
-                first_fid: 0,
-                next: 0,
-                file_nbit: file_pool.file_nbit,
-                next_complete: 0,
+                counter,
+                first_fid,
+                next_complete: first_fid << self.file_nbit,
+                next: first_fid << self.file_nbit,
+                file_nbit: self.file_nbit,
                 io_complete: BinaryHeap::new(),
             },
             file_pool,

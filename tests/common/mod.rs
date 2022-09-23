@@ -480,8 +480,8 @@ fn test_canvas() {
 }
 
 pub struct PaintingSim {
-    pub block_nbit: u8,
-    pub file_nbit: u8,
+    pub block_nbit: u64,
+    pub file_nbit: u64,
     pub file_cache: usize,
     /// number of PaintStrokes (WriteBatch)
     pub n: usize,
@@ -522,6 +522,7 @@ impl PaintingSim {
                     Ok(())
                 }
             },
+            0
         ))?;
         for _ in 0..self.n {
             let pss = (0..self.m)
@@ -567,7 +568,7 @@ impl PaintingSim {
                 }
                 if let Some((fin_rid, _)) = canvas.rand_paint(&mut rng) {
                     if let Some(rid) = fin_rid {
-                        futures::executor::block_on(wal.peel(&[rid]))?
+                        futures::executor::block_on(wal.peel(&[rid], 0))?
                     }
                 } else {
                     break
@@ -628,6 +629,7 @@ impl PaintingSim {
                 napplied += 1;
                 Ok(())
             },
+            0,
         ))
         .unwrap();
         println!("last = {}/{}, applied = {}", last_idx, ops.len(), napplied);

@@ -11,7 +11,7 @@
 //!
 //! // Start with empty WAL (truncate = true).
 //! let store = WALStoreAIO::new("./walfiles", true, None, None).unwrap();
-//! let mut wal = block_on(loader.load(store, |_, _| {Ok(())})).unwrap();
+//! let mut wal = block_on(loader.load(store, |_, _| {Ok(())}, 0)).unwrap();
 //! // Write a vector of records to WAL.
 //! for f in wal.grow(vec!["record1(foo)", "record2(bar)", "record3(foobar)"]).into_iter() {
 //!     let ring_id = block_on(f).unwrap().1;
@@ -27,21 +27,21 @@
 //!              std::str::from_utf8(&payload).unwrap(),
 //!              ringid);
 //!     Ok(())
-//! })).unwrap();
+//! }, 0)).unwrap();
 //! // We saw some log playback, even there is no failure.
 //! // Let's try to grow the WAL to create many files.
 //! let ring_ids = wal.grow((1..100).into_iter().map(|i| "a".repeat(i)).collect::<Vec<_>>())
 //!                   .into_iter().map(|f| block_on(f).unwrap().1).collect::<Vec<_>>();
 //! // Then assume all these records are not longer needed. We can tell WALWriter by the `peel`
 //! // method.
-//! block_on(wal.peel(ring_ids)).unwrap();
+//! block_on(wal.peel(ring_ids, 0)).unwrap();
 //! // There will only be one remaining file in ./walfiles.
 //!
 //! let store = WALStoreAIO::new("./walfiles", false, None, None).unwrap();
 //! let wal = block_on(loader.load(store, |payload, _| {
 //!     println!("payload.len() = {}", payload.len());
 //!     Ok(())
-//! })).unwrap();
+//! }, 0)).unwrap();
 //! // After each recovery, the ./walfiles is empty.
 //! ```
 

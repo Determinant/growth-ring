@@ -3,7 +3,7 @@ use growthring::{
     wal::{WALBytes, WALLoader, WALRingId, WALWriter},
     WALStoreAIO,
 };
-use rand::{seq::SliceRandom, Rng};
+use rand::{seq::SliceRandom, SeedableRng, Rng};
 
 fn test(
     records: Vec<String>,
@@ -29,12 +29,12 @@ fn recover(payload: WALBytes, ringid: WALRingId) -> Result<(), ()> {
 
 fn main() {
     let wal_dir = "./wal_demo1";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0);
     let mut loader = WALLoader::new();
     loader.file_nbit(9).block_nbit(8);
 
     let store = WALStoreAIO::new(&wal_dir, true, None, None).unwrap();
-    let mut wal = block_on(loader.load(store, recover)).unwrap();
+    let mut wal = block_on(loader.load(store, recover, 0)).unwrap();
     for _ in 0..3 {
         test(
             ["hi", "hello", "lol"]
@@ -52,7 +52,7 @@ fn main() {
     }
 
     let store = WALStoreAIO::new(&wal_dir, false, None, None).unwrap();
-    let mut wal = block_on(loader.load(store, recover)).unwrap();
+    let mut wal = block_on(loader.load(store, recover, 0)).unwrap();
     for _ in 0..3 {
         test(
             vec![
@@ -66,7 +66,7 @@ fn main() {
     }
 
     let store = WALStoreAIO::new(&wal_dir, false, None, None).unwrap();
-    let mut wal = block_on(loader.load(store, recover)).unwrap();
+    let mut wal = block_on(loader.load(store, recover, 0)).unwrap();
     for _ in 0..3 {
         let mut ids = Vec::new();
         for _ in 0..3 {
@@ -81,7 +81,7 @@ fn main() {
         ids.shuffle(&mut rng);
         for e in ids.chunks(20) {
             println!("peel(20)");
-            futures::executor::block_on(wal.peel(e)).unwrap();
+            futures::executor::block_on(wal.peel(e, 0)).unwrap();
         }
     }
 }
