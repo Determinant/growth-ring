@@ -4,6 +4,7 @@ use futures::{
     stream::StreamExt,
     Future,
 };
+
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{hash_map, BinaryHeap, HashMap};
 use std::convert::{TryFrom, TryInto};
@@ -71,6 +72,14 @@ fn sort_fids(file_nbit: u64, mut fids: Vec<u64>) -> Vec<(u8, u64)> {
     } else {
         fids.sort();
         fids.into_iter().map(|fid| (0, fid)).collect()
+    }
+}
+
+fn counter_lt(a: u32, b: u32) -> bool {
+    if u32::abs_diff(a, b) > u32::MAX / 2 {
+        b < a
+    } else {
+        a < b
     }
 }
 
@@ -429,9 +438,12 @@ impl<F: WALStore> WALFilePool<F> {
         };
 
         let mut removes = Vec::new();
-        for fid in fid_s..fid_e {
+        let mut fid = fid_s;
+        let fid_mask = (!0) >> self.file_nbit;
+        while fid != fid_e {
             removes.push(self.store.remove_file(get_fname(fid))
-                as Pin<Box<dyn Future<Output = _> + 'a>>)
+                as Pin<Box<dyn Future<Output = _> + 'a>>);
+            fid = (fid + 1) & fid_mask;
         }
         let p = async move {
             last_peel.await?;
@@ -669,11 +681,10 @@ impl<F: WALStore> WALWriter<F> {
                 m.end += block_remain
             }
             state.next_complete = m;
-            if m.counter + keep_nrecords < state.counter {
+            if counter_lt(m.counter + keep_nrecords, state.counter) {
                 next_fid = state.next_complete.end >> state.file_nbit;
             }
         }
-        //println!("{} {}", orig_fid, next_fid);
         state.first_fid = next_fid;
         self.file_pool.remove_files(orig_fid, next_fid).await.ok();
         Ok(())
@@ -1082,22 +1093,12 @@ impl WALLoader {
 
         let header = file_pool.read_header().await?;
 
-        // TODO: check for missing logfiles
-
         let mut chunks = None;
         let mut pre_skip = true;
-        let mut scanned_files: Vec<(String, WALFileHandle<S>)> = Vec::new();
-
-        let first_fid = logfiles.first().map(|e| e.1);
-        let recover_fid = match logfiles.last() {
-            Some((_, fid)) => *fid + 1,
-            None => 0,
-        };
-
-        file_pool.write_header(&Header { recover_fid }).await?;
-
+        let mut scanned: Vec<(String, WALFileHandle<S>)> = Vec::new();
         let mut counter = 0;
 
+        // TODO: check for missing logfiles
         'outer: for (_, fid) in logfiles.into_iter() {
             let fname = get_fname(fid);
             let f = file_pool.get_file(fid, false).await?;
@@ -1105,7 +1106,7 @@ impl WALLoader {
                 pre_skip = false;
             }
             if pre_skip {
-                scanned_files.push((fname, f));
+                scanned.push((fname, f));
                 continue
             }
             {
@@ -1125,10 +1126,10 @@ impl WALLoader {
                     recover_func(bytes, ring_id)?;
                 }
             }
-            scanned_files.push((fname, f));
+            scanned.push((fname, f));
         }
 
-        'outer: for (_, f) in scanned_files.iter().rev() {
+        'outer: for (_, f) in scanned.iter().rev() {
             let records: Vec<_> = self.read_ring_headers(f).collect().await;
             for e in records.into_iter().rev() {
                 let rec = e.map_err(|_| ())?;
@@ -1141,14 +1142,23 @@ impl WALLoader {
             }
         }
 
-        for (fname, f) in scanned_files.into_iter() {
+        let fid_mask = (!0) >> self.file_nbit;
+        let first_fid = scanned.first().map(|e| e.1.fid);
+        let recover_fid = match scanned.last() {
+            Some((_, f)) => (f.fid + 1) & fid_mask,
+            None => 0,
+        };
+
+        file_pool.write_header(&Header { recover_fid }).await?;
+
+        for (fname, f) in scanned.into_iter() {
             if let Some(last_e) = self
                 .read_ring_headers(&f)
                 .fold(None, |_, e| async move { Some(e) })
                 .await
             {
                 let last_rec = last_e.map_err(|_| ())?;
-                if last_rec.counter + keep_nrecords >= counter {
+                if !counter_lt(last_rec.counter + keep_nrecords, counter) {
                     break
                 }
             }
