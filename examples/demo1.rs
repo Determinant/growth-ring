@@ -66,7 +66,7 @@ fn main() {
     }
 
     let store = WALStoreAIO::new(&wal_dir, false, None, None).unwrap();
-    let mut wal = block_on(loader.load(store, recover, 0)).unwrap();
+    let mut wal = block_on(loader.load(store, recover, 100)).unwrap();
     for _ in 0..3 {
         let mut ids = Vec::new();
         for _ in 0..3 {
@@ -81,7 +81,7 @@ fn main() {
         ids.shuffle(&mut rng);
         for e in ids.chunks(20) {
             println!("peel(20)");
-            futures::executor::block_on(wal.peel(e, 0)).unwrap();
+            futures::executor::block_on(wal.peel(e, 100)).unwrap();
         }
     }
 }
