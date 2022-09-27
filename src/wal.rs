@@ -12,6 +12,8 @@ use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 
+const FILENAME_FMT: &str = r"[0-9a-f]+\.log";
+
 enum WALRingType {
     #[allow(dead_code)]
     Null = 0x0,
@@ -693,6 +695,115 @@ impl<F: WALStore> WALWriter<F> {
     pub fn file_pool_in_use(&self) -> usize {
         self.file_pool.in_use_len()
     }
+
+    pub async fn read_recent_records<'a>(
+        &'a self,
+        nrecords: usize,
+        recover_policy: &RecoverPolicy,
+    ) -> Result<Vec<WALBytes>, ()> {
+        let filename_fmt = regex::Regex::new(FILENAME_FMT).unwrap();
+        let file_pool = &self.file_pool;
+        let file_nbit = file_pool.file_nbit;
+        let block_size = 1 << file_pool.block_nbit;
+        let msize = std::mem::size_of::<WALRingBlob>();
+
+        let logfiles = sort_fids(
+            file_nbit,
+            file_pool
+                .store
+                .enumerate_files()?
+                .filter(|f| filename_fmt.is_match(f))
+                .map(|s| get_fid(&s))
+                .collect(),
+        );
+
+        let mut chunks: Option<Vec<_>> = None;
+        let mut records = Vec::new();
+        'outer: for (_, fid) in logfiles.into_iter().rev() {
+            let f = file_pool.get_file(fid, false).await?;
+            let ring_stream = WALLoader::read_rings(
+                &f,
+                true,
+                file_pool.block_nbit,
+                recover_policy,
+            );
+            let mut off = fid << file_nbit;
+            let mut rings = Vec::new();
+            futures::pin_mut!(ring_stream);
+            while let Some(ring) = ring_stream.next().await {
+                rings.push(ring);
+            }
+            for ring in rings.into_iter().rev() {
+                let ring = ring.map_err(|_| ())?;
+                let (header, payload) = ring;
+                let payload = payload.unwrap();
+                match header.rtype.try_into() {
+                    Ok(WALRingType::Full) => {
+                        assert!(chunks.is_none());
+                        if !WALLoader::verify_checksum_(
+                            &payload,
+                            header.crc32,
+                            recover_policy,
+                        )? {
+                            return Err(())
+                        }
+                        off += header.rsize as u64;
+                        records.push(payload);
+                    }
+                    Ok(WALRingType::First) => {
+                        if !WALLoader::verify_checksum_(
+                            &payload,
+                            header.crc32,
+                            recover_policy,
+                        )? {
+                            return Err(())
+                        }
+                        if let Some(mut chunks) = chunks.take() {
+                            chunks.push(payload);
+                            let mut acc = Vec::new();
+                            chunks.into_iter().rev().fold(
+                                &mut acc,
+                                |acc, v| {
+                                    acc.extend(v.iter());
+                                    acc
+                                },
+                            );
+                            records.push(acc.into());
+                        } else {
+                            unreachable!()
+                        }
+                        off += header.rsize as u64;
+                    }
+                    Ok(WALRingType::Middle) => {
+                        if let Some(chunks) = &mut chunks {
+                            chunks.push(payload);
+                        } else {
+                            unreachable!()
+                        }
+                        off += header.rsize as u64;
+                    }
+                    Ok(WALRingType::Last) => {
+                        assert!(chunks.is_none());
+                        chunks = Some(vec![payload]);
+                        off += header.rsize as u64;
+                    }
+                    Ok(WALRingType::Null) => break,
+                    Err(_) => match recover_policy {
+                        RecoverPolicy::Strict => return Err(()),
+                        RecoverPolicy::BestEffort => break 'outer,
+                    },
+                }
+                let block_remain = block_size - (off & (block_size - 1));
+                if block_remain <= msize as u64 {
+                    off += block_remain;
+                }
+                if records.len() >= nrecords {
+                    break 'outer
+                }
+            }
+        }
+        Ok(records)
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -746,22 +857,33 @@ impl WALLoader {
         self
     }
 
-    fn verify_checksum(&self, data: &[u8], checksum: u32) -> Result<bool, ()> {
+    fn verify_checksum_(
+        data: &[u8],
+        checksum: u32,
+        p: &RecoverPolicy,
+    ) -> Result<bool, ()> {
         if checksum == CRC32.checksum(data) {
             Ok(true)
         } else {
-            match self.recover_policy {
+            match p {
                 RecoverPolicy::Strict => Err(()),
                 RecoverPolicy::BestEffort => Ok(false),
             }
         }
     }
 
-    fn read_ring_headers<'a, F: WALStore + 'a>(
-        &'a self,
+    fn verify_checksum(&self, data: &[u8], checksum: u32) -> Result<bool, ()> {
+        Self::verify_checksum_(data, checksum, &self.recover_policy)
+    }
+
+    fn read_rings<'a, F: WALStore + 'a>(
         file: &'a WALFileHandle<'a, F>,
-    ) -> impl futures::Stream<Item = Result<WALRingBlob, bool>> + 'a {
-        let block_size = 1 << self.block_nbit;
+        read_payload: bool,
+        block_nbit: u64,
+        recover_policy: &'a RecoverPolicy,
+    ) -> impl futures::Stream<Item = Result<(WALRingBlob, Option<WALBytes>), bool>>
+           + 'a {
+        let block_size = 1 << block_nbit;
         let msize = std::mem::size_of::<WALRingBlob>();
 
         struct Vars<'a, F: WALStore> {
@@ -839,17 +961,26 @@ impl WALLoader {
                     rsize: header.rsize,
                     rtype: header.rtype,
                 };
+                let payload;
                 match header.rtype.try_into() {
                     Ok(WALRingType::Full) |
                     Ok(WALRingType::First) |
                     Ok(WALRingType::Middle) |
                     Ok(WALRingType::Last) => {
+                        payload = if read_payload {
+                            Some(check!(check!(
+                                v.file.read(v.off, header.rsize as usize).await
+                            )
+                            .ok_or(())))
+                        } else {
+                            None
+                        };
                         v.off += header.rsize as u64;
                     }
                     Ok(WALRingType::Null) => {
                         _yield!()
                     }
-                    Err(_) => match self.recover_policy {
+                    Err(_) => match recover_policy {
                         RecoverPolicy::Strict => die!(),
                         RecoverPolicy::BestEffort => {
                             v.done = true;
@@ -857,7 +988,7 @@ impl WALLoader {
                         }
                     },
                 }
-                _yield!(header)
+                _yield!((header, payload))
             }
         })
     }
@@ -1073,7 +1204,7 @@ impl WALLoader {
         let msize = std::mem::size_of::<WALRingBlob>();
         assert!(self.file_nbit > self.block_nbit);
         assert!(msize < 1 << self.block_nbit);
-        let filename_fmt = regex::Regex::new(r"[0-9a-f]+\.log").unwrap();
+        let filename_fmt = regex::Regex::new(FILENAME_FMT).unwrap();
         let mut file_pool = WALFilePool::new(
             store,
             self.file_nbit,
@@ -1130,9 +1261,16 @@ impl WALLoader {
         }
 
         'outer: for (_, f) in scanned.iter().rev() {
-            let records: Vec<_> = self.read_ring_headers(f).collect().await;
+            let records: Vec<_> = Self::read_rings(
+                f,
+                false,
+                self.block_nbit,
+                &self.recover_policy,
+            )
+            .collect()
+            .await;
             for e in records.into_iter().rev() {
-                let rec = e.map_err(|_| ())?;
+                let (rec, _) = e.map_err(|_| ())?;
                 if rec.rtype == WALRingType::Full as u8 ||
                     rec.rtype == WALRingType::Last as u8
                 {
@@ -1152,12 +1290,16 @@ impl WALLoader {
         file_pool.write_header(&Header { recover_fid }).await?;
 
         for (fname, f) in scanned.into_iter() {
-            if let Some(last_e) = self
-                .read_ring_headers(&f)
-                .fold(None, |_, e| async move { Some(e) })
-                .await
+            if let Some(last_e) = Self::read_rings(
+                &f,
+                false,
+                self.block_nbit,
+                &self.recover_policy,
+            )
+            .fold(None, |_, e| async move { Some(e) })
+            .await
             {
-                let last_rec = last_e.map_err(|_| ())?;
+                let (last_rec, _) = last_e.map_err(|_| ())?;
                 if !counter_lt(last_rec.counter + keep_nrecords, counter) {
                     break
                 }

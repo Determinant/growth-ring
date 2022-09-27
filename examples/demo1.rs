@@ -3,7 +3,7 @@ use growthring::{
     wal::{WALBytes, WALLoader, WALRingId, WALWriter},
     WALStoreAIO,
 };
-use rand::{seq::SliceRandom, SeedableRng, Rng};
+use rand::{seq::SliceRandom, Rng, SeedableRng};
 
 fn test(
     records: Vec<String>,
@@ -67,12 +67,18 @@ fn main() {
 
     let store = WALStoreAIO::new(&wal_dir, false, None, None).unwrap();
     let mut wal = block_on(loader.load(store, recover, 100)).unwrap();
+    let mut history = std::collections::VecDeque::new();
     for _ in 0..3 {
         let mut ids = Vec::new();
         for _ in 0..3 {
             let mut records = Vec::new();
             for _ in 0..100 {
-                records.push("a".repeat(rng.gen_range(1..10)))
+                let rec = "a".repeat(rng.gen_range(1..1000));
+                history.push_back(rec.clone());
+                if history.len() > 100 {
+                    history.pop_front();
+                }
+                records.push(rec)
             }
             for id in test(records, &mut wal).iter() {
                 ids.push(*id)
@@ -83,5 +89,15 @@ fn main() {
             println!("peel(20)");
             futures::executor::block_on(wal.peel(e, 100)).unwrap();
         }
+    }
+    for (rec, ans) in block_on(
+        wal.read_recent_records(100, &growthring::wal::RecoverPolicy::Strict),
+    )
+    .unwrap()
+    .into_iter()
+    .zip(history.into_iter().rev())
+    {
+        assert_eq!(std::str::from_utf8(&rec).unwrap(), &ans);
+        println!("{}", std::str::from_utf8(&rec).unwrap());
     }
 }
