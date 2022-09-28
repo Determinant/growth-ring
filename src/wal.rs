@@ -439,7 +439,7 @@ impl<F: WALStore> WALFilePool<F> {
             .assume_init()
         };
 
-        let mut removes = Vec::new();
+        let mut removes: Vec<Pin<Box<dyn Future<Output = Result<(), ()>>>>> = Vec::new();
         let mut fid = fid_s;
         let fid_mask = (!0) >> self.file_nbit;
         while fid != fid_e {
@@ -448,9 +448,9 @@ impl<F: WALStore> WALFilePool<F> {
             fid = (fid + 1) & fid_mask;
         }
         let p = async move {
-            last_peel.await?;
+            last_peel.await.ok();
             for r in removes.into_iter() {
-                r.await?
+                r.await.ok();
             }
             Ok(())
         }
