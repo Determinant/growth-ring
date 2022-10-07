@@ -6,7 +6,7 @@ use futures::{
 };
 
 use std::cell::{RefCell, UnsafeCell};
-use std::collections::{hash_map, BinaryHeap, HashMap};
+use std::collections::{hash_map, BinaryHeap, HashMap, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
@@ -156,8 +156,6 @@ impl Record for &str {
 
 /// the state for a WAL writer
 struct WALState {
-    /// the first file id of WAL
-    first_fid: WALFileId,
     /// the next position for a record, addressed in the entire WAL space
     next: WALPos,
     /// number of bits for a file
@@ -165,6 +163,7 @@ struct WALState {
     next_complete: WALRingId,
     counter: u32,
     io_complete: BinaryHeap<WALRingId>,
+    pending_removal: VecDeque<(WALFileId, u32)>,
 }
 
 #[async_trait(?Send)]
@@ -428,8 +427,8 @@ impl<F: WALStore> WALFilePool<F> {
 
     fn remove_files<'a>(
         &'a mut self,
-        fid_s: u64,
-        fid_e: u64,
+        state: &mut WALState,
+        keep_nrecords: u32,
     ) -> impl Future<Output = Result<(), ()>> + 'a {
         let last_peel = unsafe {
             std::mem::replace(
@@ -439,13 +438,17 @@ impl<F: WALStore> WALFilePool<F> {
             .assume_init()
         };
 
-        let mut removes: Vec<Pin<Box<dyn Future<Output = Result<(), ()>>>>> = Vec::new();
-        let mut fid = fid_s;
-        let fid_mask = (!0) >> self.file_nbit;
-        while fid != fid_e {
-            removes.push(self.store.remove_file(get_fname(fid))
-                as Pin<Box<dyn Future<Output = _> + 'a>>);
-            fid = (fid + 1) & fid_mask;
+        let mut removes: Vec<Pin<Box<dyn Future<Output = Result<(), ()>>>>> =
+            Vec::new();
+        while state.pending_removal.len() > 1 {
+            let (fid, counter) = state.pending_removal.front().unwrap();
+            if counter_lt(counter + keep_nrecords, state.counter) {
+                removes.push(self.store.remove_file(get_fname(*fid))
+                    as Pin<Box<dyn Future<Output = _> + 'a>>);
+                state.pending_removal.pop_front();
+            } else {
+                break
+            }
         }
         let p = async move {
             last_peel.await.ok();
@@ -669,8 +672,6 @@ impl<F: WALStore> WALWriter<F> {
         for rec in records.as_ref() {
             state.io_complete.push(*rec);
         }
-        let orig_fid = state.first_fid;
-        let mut next_fid = orig_fid;
         while let Some(s) =
             state.io_complete.peek().and_then(|&e| Some(e.start))
         {
@@ -682,13 +683,22 @@ impl<F: WALStore> WALWriter<F> {
             if block_remain <= msize as u64 {
                 m.end += block_remain
             }
-            state.next_complete = m;
-            if counter_lt(m.counter + keep_nrecords, state.counter) {
-                next_fid = state.next_complete.end >> state.file_nbit;
+            let fid = m.start >> state.file_nbit;
+            match state.pending_removal.back_mut() {
+                Some(l) => {
+                    if l.0 == fid {
+                        l.1 = m.counter
+                    } else {
+                        for i in l.0 + 1..fid + 1 {
+                            state.pending_removal.push_back((i, m.counter))
+                        }
+                    }
+                }
+                None => state.pending_removal.push_back((fid, m.counter)),
             }
+            state.next_complete = m;
         }
-        state.first_fid = next_fid;
-        self.file_pool.remove_files(orig_fid, next_fid).await.ok();
+        self.file_pool.remove_files(state, keep_nrecords).await.ok();
         Ok(())
     }
 
@@ -977,9 +987,7 @@ impl WALLoader {
                         };
                         v.off += header.rsize as u64;
                     }
-                    Ok(WALRingType::Null) => {
-                        _yield!()
-                    }
+                    Ok(WALRingType::Null) => _yield!(),
                     Err(_) => match recover_policy {
                         RecoverPolicy::Strict => die!(),
                         RecoverPolicy::BestEffort => {
@@ -1174,9 +1182,7 @@ impl WALLoader {
                                 ))
                             }
                         }
-                        Ok(WALRingType::Null) => {
-                            _yield!()
-                        }
+                        Ok(WALRingType::Null) => _yield!(),
                         Err(_) => match self.recover_policy {
                             RecoverPolicy::Strict => die!(),
                             RecoverPolicy::BestEffort => {
@@ -1281,7 +1287,7 @@ impl WALLoader {
         }
 
         let fid_mask = (!0) >> self.file_nbit;
-        let first_fid = scanned.first().map(|e| e.1.fid);
+        let mut pending_removal = VecDeque::new();
         let recover_fid = match scanned.last() {
             Some((_, f)) => (f.fid + 1) & fid_mask,
             None => 0,
@@ -1289,23 +1295,31 @@ impl WALLoader {
 
         file_pool.write_header(&Header { recover_fid }).await?;
 
+        let mut skip_remove = false;
         for (fname, f) in scanned.into_iter() {
-            if let Some(last_e) = Self::read_rings(
+            let mut last = None;
+            let stream = Self::read_rings(
                 &f,
                 false,
                 self.block_nbit,
                 &self.recover_policy,
-            )
-            .fold(None, |_, e| async move { Some(e) })
-            .await
-            {
-                let (last_rec, _) = last_e.map_err(|_| ())?;
+            );
+            futures::pin_mut!(stream);
+            while let Some(r) = stream.next().await {
+                last = Some(r.map_err(|_| ())?);
+            }
+            if let Some((last_rec, _)) = last {
                 if !counter_lt(last_rec.counter + keep_nrecords, counter) {
-                    break
+                    skip_remove = true;
+                }
+                if skip_remove {
+                    pending_removal.push_back((f.fid, last_rec.counter));
                 }
             }
-            f.truncate(0)?;
-            file_pool.store.remove_file(fname).await?;
+            if !skip_remove {
+                f.truncate(0)?;
+                file_pool.store.remove_file(fname).await?;
+            }
         }
 
         file_pool.reset();
@@ -1319,11 +1333,11 @@ impl WALLoader {
         Ok(WALWriter::new(
             WALState {
                 counter,
-                first_fid: first_fid.unwrap_or(0),
                 next_complete,
                 next,
                 file_nbit: self.file_nbit,
                 io_complete: BinaryHeap::new(),
+                pending_removal,
             },
             file_pool,
         ))
