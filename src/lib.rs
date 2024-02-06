@@ -53,36 +53,33 @@ use async_trait::async_trait;
 use libc::off_t;
 use nix::fcntl::{fallocate, open, openat, FallocateFlags, OFlag};
 use nix::sys::stat::Mode;
-use nix::unistd::{close, ftruncate, mkdir, unlinkat, UnlinkatFlags};
-use std::os::unix::io::RawFd;
+use nix::unistd::{ftruncate, mkdir, unlinkat, UnlinkatFlags};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use wal::{WALBytes, WALFile, WALPos, WALStore};
 
 pub struct WALFileAIO {
-    fd: RawFd,
+    fd: OwnedFd,
     aiomgr: Arc<AIOManager>,
 }
 
 impl WALFileAIO {
     pub fn new(
-        rootfd: RawFd,
-        filename: &str,
-        aiomgr: Arc<AIOManager>,
+        rootfd: BorrowedFd, filename: &str, aiomgr: Arc<AIOManager>,
     ) -> Result<Self, ()> {
         openat(
-            rootfd,
+            rootfd.as_raw_fd(),
             filename,
             OFlag::O_CREAT | OFlag::O_RDWR,
             Mode::S_IRUSR | Mode::S_IWUSR,
         )
-        .and_then(|fd| Ok(WALFileAIO { fd, aiomgr }))
+        .and_then(|fd| {
+            Ok(WALFileAIO {
+                fd: unsafe { OwnedFd::from_raw_fd(fd) },
+                aiomgr,
+            })
+        })
         .or_else(|_| Err(()))
-    }
-}
-
-impl Drop for WALFileAIO {
-    fn drop(&mut self) {
-        close(self.fd).unwrap();
     }
 }
 
@@ -91,7 +88,7 @@ impl WALFile for WALFileAIO {
     async fn allocate(&self, offset: WALPos, length: usize) -> Result<(), ()> {
         // TODO: is there any async version of fallocate?
         fallocate(
-            self.fd,
+            self.fd.as_raw_fd(),
             FallocateFlags::FALLOC_FL_ZERO_RANGE,
             offset as off_t,
             length as off_t,
@@ -101,11 +98,14 @@ impl WALFile for WALFileAIO {
     }
 
     fn truncate(&self, length: usize) -> Result<(), ()> {
-        ftruncate(self.fd, length as off_t).or_else(|_| Err(()))
+        ftruncate(&self.fd, length as off_t).or_else(|_| Err(()))
     }
 
     async fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()> {
-        let (res, data) = self.aiomgr.write(self.fd, offset, data, None).await;
+        let (res, data) = self
+            .aiomgr
+            .write(self.fd.as_raw_fd(), offset, data, None)
+            .await;
         res.or_else(|_| Err(())).and_then(|nwrote| {
             if nwrote == data.len() {
                 Ok(())
@@ -116,11 +116,12 @@ impl WALFile for WALFileAIO {
     }
 
     async fn read(
-        &self,
-        offset: WALPos,
-        length: usize,
+        &self, offset: WALPos, length: usize,
     ) -> Result<Option<WALBytes>, ()> {
-        let (res, data) = self.aiomgr.read(self.fd, offset, length, None).await;
+        let (res, data) = self
+            .aiomgr
+            .read(self.fd.as_raw_fd(), offset, length, None)
+            .await;
         res.or_else(|_| Err(())).and_then(|nread| {
             Ok(if nread == length { Some(data) } else { None })
         })
@@ -128,7 +129,7 @@ impl WALFile for WALFileAIO {
 }
 
 pub struct WALStoreAIO {
-    rootfd: RawFd,
+    rootfd: OwnedFd,
     aiomgr: Arc<AIOManager>,
 }
 
@@ -136,9 +137,7 @@ unsafe impl Send for WALStoreAIO {}
 
 impl WALStoreAIO {
     pub fn new(
-        wal_dir: &str,
-        truncate: bool,
-        rootfd: Option<RawFd>,
+        wal_dir: &str, truncate: bool, rootfd: Option<BorrowedFd>,
         aiomgr: Option<AIOManager>,
     ) -> Result<Self, ()> {
         let aiomgr = Arc::new(aiomgr.ok_or(Err(())).or_else(
@@ -177,7 +176,7 @@ impl WALStoreAIO {
                 let dirstr = std::ffi::CString::new(wal_dir).unwrap();
                 let ret = unsafe {
                     libc::mkdirat(
-                        fd,
+                        fd.as_raw_fd(),
                         dirstr.as_ptr(),
                         libc::S_IRUSR | libc::S_IWUSR | libc::S_IXUSR,
                     )
@@ -188,7 +187,7 @@ impl WALStoreAIO {
                     }
                 }
                 walfd = match nix::fcntl::openat(
-                    fd,
+                    fd.as_raw_fd(),
                     wal_dir,
                     OFlag::O_DIRECTORY | OFlag::O_PATH,
                     Mode::empty(),
@@ -199,7 +198,7 @@ impl WALStoreAIO {
             }
         }
         Ok(WALStoreAIO {
-            rootfd: walfd,
+            rootfd: unsafe { OwnedFd::from_raw_fd(walfd) },
             aiomgr,
         })
     }
@@ -210,18 +209,16 @@ impl WALStore for WALStoreAIO {
     type FileNameIter = std::vec::IntoIter<String>;
 
     async fn open_file(
-        &self,
-        filename: &str,
-        _touch: bool,
+        &self, filename: &str, _touch: bool,
     ) -> Result<Box<dyn WALFile>, ()> {
         let filename = filename.to_string();
-        WALFileAIO::new(self.rootfd, &filename, self.aiomgr.clone())
+        WALFileAIO::new(self.rootfd.as_fd(), &filename, self.aiomgr.clone())
             .and_then(|f| Ok(Box::new(f) as Box<dyn WALFile>))
     }
 
     async fn remove_file(&self, filename: String) -> Result<(), ()> {
         unlinkat(
-            Some(self.rootfd),
+            Some(self.rootfd.as_raw_fd()),
             filename.as_str(),
             UnlinkatFlags::NoRemoveDir,
         )
@@ -231,7 +228,7 @@ impl WALStore for WALStoreAIO {
     fn enumerate_files(&self) -> Result<Self::FileNameIter, ()> {
         let mut logfiles = Vec::new();
         for ent in nix::dir::Dir::openat(
-            self.rootfd,
+            self.rootfd.as_raw_fd(),
             "./",
             OFlag::empty(),
             Mode::empty(),
@@ -243,11 +240,5 @@ impl WALStore for WALStoreAIO {
                 .push(ent.unwrap().file_name().to_str().unwrap().to_string())
         }
         Ok(logfiles.into_iter())
-    }
-}
-
-impl Drop for WALStoreAIO {
-    fn drop(&mut self) {
-        nix::unistd::close(self.rootfd).ok();
     }
 }

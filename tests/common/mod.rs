@@ -339,7 +339,7 @@ pub struct Canvas {
 impl Canvas {
     pub fn new(size: usize) -> Self {
         let mut canvas = Vec::new();
-        // fill the backgroudn color 0
+        // fill the background color 0
         canvas.resize(size, 0);
         let canvas = canvas.into_boxed_slice();
         Canvas {
@@ -423,7 +423,7 @@ impl Canvas {
         let q = self.queue.get_mut(&pos).unwrap();
         let (c, rid) = q.pop_front().unwrap();
         if q.is_empty() {
-            self.queue.remove(&pos);
+            self.queue.swap_remove(&pos);
         }
         self.canvas[pos as usize] = c;
         if let Some(cnt) = self.waiting.get_mut(&rid) {

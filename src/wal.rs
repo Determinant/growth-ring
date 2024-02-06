@@ -177,9 +177,7 @@ pub trait WALFile {
     async fn write(&self, offset: WALPos, data: WALBytes) -> Result<(), ()>;
     /// Read data with offset. Return `Ok(None)` when it reaches EOF.
     async fn read(
-        &self,
-        offset: WALPos,
-        length: usize,
+        &self, offset: WALPos, length: usize,
     ) -> Result<Option<WALBytes>, ()>;
     /// Truncate a file to a specified length.
     fn truncate(&self, length: usize) -> Result<(), ()>;
@@ -191,9 +189,7 @@ pub trait WALStore {
 
     /// Open a file given the filename, create the file if not exists when `touch` is `true`.
     async fn open_file(
-        &self,
-        filename: &str,
-        touch: bool,
+        &self, filename: &str, touch: bool,
     ) -> Result<Box<dyn WALFile>, ()>;
     /// Unlink a file given the filename.
     async fn remove_file(&self, filename: String) -> Result<(), ()>;
@@ -242,10 +238,7 @@ struct WALFilePool<F: WALStore> {
 
 impl<F: WALStore> WALFilePool<F> {
     async fn new(
-        store: F,
-        file_nbit: u64,
-        block_nbit: u64,
-        cache_size: NonZeroUsize,
+        store: F, file_nbit: u64, block_nbit: u64, cache_size: NonZeroUsize,
     ) -> Result<Self, ()> {
         let file_nbit = file_nbit as u64;
         let block_nbit = block_nbit as u64;
@@ -283,9 +276,7 @@ impl<F: WALStore> WALFilePool<F> {
     }
 
     fn get_file<'a>(
-        &'a self,
-        fid: u64,
-        touch: bool,
+        &'a self, fid: u64, touch: bool,
     ) -> impl Future<Output = Result<WALFileHandle<'a, F>, ()>> {
         async move {
             let pool = self as *const WALFilePool<F>;
@@ -338,8 +329,7 @@ impl<F: WALStore> WALFilePool<F> {
     }
 
     fn write<'a>(
-        &'a mut self,
-        writes: Vec<(WALPos, WALBytes)>,
+        &'a mut self, writes: Vec<(WALPos, WALBytes)>,
     ) -> Vec<Pin<Box<dyn Future<Output = Result<(), ()>> + 'a>>> {
         if writes.is_empty() {
             return Vec::new()
@@ -426,9 +416,7 @@ impl<F: WALStore> WALFilePool<F> {
     }
 
     fn remove_files<'a>(
-        &'a mut self,
-        state: &mut WALState,
-        keep_nrecords: u32,
+        &'a mut self, state: &mut WALState, keep_nrecords: u32,
     ) -> impl Future<Output = Result<(), ()>> + 'a {
         let last_peel = unsafe {
             std::mem::replace(
@@ -508,8 +496,7 @@ impl<F: WALStore> WALWriter<F> {
     /// `peel` with the given `WALRingId`s. Note: each serialized record should contain at least 1
     /// byte (empty record payload will result in assertion failure).
     pub fn grow<'a, R: Record + 'a>(
-        &'a mut self,
-        records: Vec<R>,
+        &'a mut self, records: Vec<R>,
     ) -> Vec<impl Future<Output = Result<(R, WALRingId), ()>> + 'a> {
         let mut res = Vec::new();
         let mut writes = Vec::new();
@@ -662,9 +649,7 @@ impl<F: WALStore> WALWriter<F> {
     /// could be of arbitrary length. Use `0` for `keep_nrecords` if all obsolete WAL files
     /// need to removed (the obsolete files do not affect the speed of recovery or correctness).
     pub async fn peel<'a, T: AsRef<[WALRingId]>>(
-        &'a mut self,
-        records: T,
-        keep_nrecords: u32,
+        &'a mut self, records: T, keep_nrecords: u32,
     ) -> Result<(), ()> {
         let msize = self.msize as u64;
         let block_size = self.block_size as u64;
@@ -707,9 +692,7 @@ impl<F: WALStore> WALWriter<F> {
     }
 
     pub async fn read_recent_records<'a>(
-        &'a self,
-        nrecords: usize,
-        recover_policy: &RecoverPolicy,
+        &'a self, nrecords: usize, recover_policy: &RecoverPolicy,
     ) -> Result<Vec<WALBytes>, ()> {
         let filename_fmt = regex::Regex::new(FILENAME_FMT).unwrap();
         let file_pool = &self.file_pool;
@@ -868,9 +851,7 @@ impl WALLoader {
     }
 
     fn verify_checksum_(
-        data: &[u8],
-        checksum: u32,
-        p: &RecoverPolicy,
+        data: &[u8], checksum: u32, p: &RecoverPolicy,
     ) -> Result<bool, ()> {
         if checksum == CRC32.checksum(data) {
             Ok(true)
@@ -887,9 +868,7 @@ impl WALLoader {
     }
 
     fn read_rings<'a, F: WALStore + 'a>(
-        file: &'a WALFileHandle<'a, F>,
-        read_payload: bool,
-        block_nbit: u64,
+        file: &'a WALFileHandle<'a, F>, read_payload: bool, block_nbit: u64,
         recover_policy: &'a RecoverPolicy,
     ) -> impl futures::Stream<Item = Result<(WALRingBlob, Option<WALBytes>), bool>>
            + 'a {
@@ -1002,8 +981,7 @@ impl WALLoader {
     }
 
     fn read_records<'a, F: WALStore + 'a>(
-        &'a self,
-        file: &'a WALFileHandle<'a, F>,
+        &'a self, file: &'a WALFileHandle<'a, F>,
         chunks: &'a mut Option<(Vec<WALBytes>, WALPos)>,
     ) -> impl futures::Stream<Item = Result<(WALBytes, WALRingId, u32), bool>> + 'a
     {
@@ -1202,10 +1180,7 @@ impl WALLoader {
         S: WALStore,
         F: FnMut(WALBytes, WALRingId) -> Result<(), ()>,
     >(
-        &self,
-        store: S,
-        mut recover_func: F,
-        keep_nrecords: u32,
+        &self, store: S, mut recover_func: F, keep_nrecords: u32,
     ) -> Result<WALWriter<S>, ()> {
         let msize = std::mem::size_of::<WALRingBlob>();
         assert!(self.file_nbit > self.block_nbit);
